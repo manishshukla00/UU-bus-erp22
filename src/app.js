@@ -3,7 +3,7 @@ import helmet from 'helmet';
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
-import { ready, cleanup, get } from './db.js';
+import { ready, cleanup, get, dbStats } from './db.js';
 import { HttpError, intParam } from './http.js';
 import { loadSession, requireAuth } from './middleware/auth.js';
 import { apiLimiter } from './middleware/rateLimit.js';
@@ -12,6 +12,7 @@ import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
 import inchargeRoutes from './routes/incharge.js';
 import checkinRoutes from './routes/checkin.js';
+import { photoRoutes } from './services/photos.js';
 
 /*
  * The Express application, shared by:
@@ -61,6 +62,20 @@ const INDEX = path.join(DIST, 'index.html');
 app.use('/assets', express.static(path.join(DIST, 'assets'), { index: false, immutable: true, maxAge: '365d', fallthrough: false }));
 app.use(express.static(DIST, { index: false, maxAge: config.isProd ? '1h' : 0, etag: true }));
 
+// ------------------------------------------------------------------ timing
+// Server-Timing: total time and database round trips for every API call (visible in the browser's
+// network panel), so slow requests can be measured from anywhere.
+app.use('/api', (req, res, next) => {
+  const stats = { n: 0, ms: 0 };
+  const start = performance.now();
+  const writeHead = res.writeHead;
+  res.writeHead = function timedWriteHead(...args) {
+    if (!this.headersSent) this.setHeader('Server-Timing', `db;dur=${stats.ms.toFixed(0)};desc="${stats.n} round trips", app;dur=${(performance.now() - start).toFixed(0)}`);
+    return writeHead.apply(this, args);
+  };
+  dbStats.run(stats, next);
+});
+
 // ------------------------------------------------------------------ setup gate
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 function setupPage(res, title, items) {
@@ -100,12 +115,13 @@ app.use(loadSession);
 app.use('/api', apiLimiter, (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 app.get('/api/health', async (req, res) => {
   const users = (await get('SELECT COUNT(*) AS c FROM users')).c;
-  res.json({ ok: true, live: config.liveMode, serverless: config.serverless, hasUsers: users > 0, time: Date.now() });
+  res.json({ ok: true, live: config.liveMode, serverless: config.serverless, region: process.env.AWS_REGION || null, hasUsers: users > 0, time: Date.now() });
 });
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/incharge', inchargeRoutes);
 app.use('/api/checkin', checkinRoutes);
+app.use('/api/photos', photoRoutes);
 app.get('/api/events', requireAuth('admin', 'operator', 'incharge'), (req, res) => {
   if (config.liveMode !== 'sse') throw new HttpError(409, 'Live updates use polling on this server', { code: 'USE_POLL' });
   subscribe(req, res, req.user);

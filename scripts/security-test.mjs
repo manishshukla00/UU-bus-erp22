@@ -64,6 +64,12 @@ if (on12.length < 4 || onOther.length < 1) { console.error('Need at least 4 stud
 const S = { aditi: [on12[0].uuid, on12[0].name], rahul: [on12[1].uuid, on12[1].name], priya: [on12[2].uuid, on12[2].name], arjun: [on12[3].uuid, on12[3].name], tanvi: [onOther[0].uuid, onOther[0].name] };
 const ids = { aditi: on12[0].id, rahul: on12[1].id, priya: on12[2].id, arjun: on12[3].id, tanvi: onOther[0].id };
 for (const id of Object.values(ids)) await call(admin, 'POST', `/api/admin/students/${id}/devices/reset`, {}, csrf);
+// remove earlier runs' selfies, so the first verification asks for one again
+for (const s of [...on12, ...onOther]) {
+  if (s.photo_url) await call(admin, 'PUT', `/api/admin/students/${s.id}`, { uuid: s.uuid, enrollment_no: s.enrollment_no, name: s.name, photo_url: '', course: s.course, year: s.year, specialization: s.specialization, bus_id: s.bus_id, stop_id: s.stop_id, phone: s.phone, active: !!s.active }, csrf);
+}
+// a stand-in selfie: a JPEG header and padding (the server checks type and size, not the picture)
+const SELFIE = `data:image/jpeg;base64,${Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(3000, 7)]).toString('base64')}`;
 const users = (await call(admin, 'GET', '/api/admin/users')).data.items;
 for (const u of users.filter((x) => ['locktest', 'testincharge12', 'testinchargex', 'testoperator'].includes(x.username))) await call(admin, 'DELETE', `/api/admin/users/${u.id}`, undefined, csrf);
 
@@ -206,9 +212,14 @@ ok(r.status === 410, 'switching back to rotating cancels day QRs', r.status);
 await call(admin, 'PUT', '/api/admin/settings', { qr_mode: ORIGINAL_QR_MODE }, csrf);
 
 const scan = async (j) => call(j, 'POST', '/api/checkin/session', { token: await freshToken() });
+// verify, taking the selfie when the server asks for one (students with no photo yet)
+const verifyId = async (j, id) => {
+  const v = await call(j, 'POST', '/api/checkin/verify', { id });
+  return v.status === 200 && v.data.needsPhoto ? call(j, 'POST', '/api/checkin/verify', { id, photo: SELFIE }) : v;
+};
 const board = async (j, [uuid]) => {
   await scan(j);
-  return call(j, 'POST', '/api/checkin/verify', { id: uuid });
+  return verifyId(j, uuid);
 };
 
 // ---------------------------------------------------------------- identity
@@ -235,8 +246,20 @@ r = await call(admin, 'GET', '/api/events/poll?after=abc');
 ok(r.status === 400, 'poll: garbage cursor rejected', r.status);
 const [cA, cI, cX] = [await cursorOf(admin), await cursorOf(inch), await cursorOf(inchX)];
 r = await call(d1, 'POST', '/api/checkin/verify', { id: ` ${S.aditi[0].toLowerCase()} ` });
-ok(r.status === 200 && r.data.ok && !r.data.already && r.data.flags.length === 0, 'phone D1 verifies Aditi (messy case/spacing)', JSON.stringify(r.data));
+ok(r.status === 200 && r.data.needsPhoto && r.data.student.name === S.aditi[1] && !r.data.boardedAt, 'no photo on record -> asks for a selfie first, nothing recorded yet', JSON.stringify(r.data));
+r = await call(d1, 'POST', '/api/checkin/verify', { id: S.aditi[0], photo: 'data:image/png;base64,iVBORw0KGgo=' });
+ok(r.status === 400 && r.data.code === 'BAD_PHOTO', 'a non-JPEG or tiny "photo" is refused', r.status);
+r = await call(d1, 'POST', '/api/checkin/verify', { id: ` ${S.aditi[0].toLowerCase()} `, photo: SELFIE });
+ok(r.status === 200 && r.data.ok && !r.data.already && r.data.flags.length === 0, 'phone D1 verifies Aditi with her selfie (messy case/spacing)', JSON.stringify(r.data));
 ok(r.data.student?.uuid === S.aditi[0] && r.data.student.name === S.aditi[1] && r.data.student.stop && r.data.trip.bus_number === '12', 'card details come from the database');
+const aditiPhoto = r.data.student?.photo_url || '';
+ok(/^\/api\/photos\/\d+\?v=\d+$/.test(aditiPhoto), 'the selfie is kept as her photo', aditiPhoto);
+let ph = await fetch(BASE + aditiPhoto, { headers: admin.headers() });
+ok(ph.status === 200 && ph.headers.get('content-type') === 'image/jpeg' && (await ph.arrayBuffer()).byteLength === 3004, 'staff can load the stored selfie', ph.status);
+ph = await fetch(BASE + aditiPhoto, { headers: d1.headers() });
+ok(ph.status === 200, "the student's own phone can load it", ph.status);
+ph = await fetch(BASE + aditiPhoto);
+ok(ph.status === 403, 'anyone else cannot', ph.status);
 if (LIVE === 'poll') {
   const seen = async (j, c) => (await call(j, 'GET', `/api/events/poll?after=${c}`)).data.events.filter((e) => e.type === 'checkin').map((e) => e.data.checkin.uuid);
   ok((await seen(admin, cA)).includes(S.aditi[0]), 'poll: admin receives the boarding event');
@@ -276,8 +299,10 @@ trip = r.data.trip;
 ok(r.status === 201, 'start trip 2');
 r = await board(d1, S.priya);
 ok(r.status === 403 && r.data.code === 'DEVICE_BOUND', "D1 (Aditi's phone) tries Priya on a new trip -> blocked", r.status);
-r = await board(d1, S.aditi);
-ok(r.status === 200 && r.data.flags.length === 0, 'D1 boards Aditi again on the new trip');
+await scan(d1);
+r = await call(d1, 'POST', '/api/checkin/verify', { id: S.aditi[0] });
+ok(r.status === 200 && !r.data.needsPhoto && r.data.flags.length === 0, 'D1 boards Aditi again on the new trip, no selfie needed now', JSON.stringify(r.data));
+ok(r.data.student?.photo_url === aditiPhoto, 'her stored selfie is on the card');
 r = await board(jar(), S.priya);
 ok(r.status === 200 && r.data.flags.includes('new_device'), 'Priya on a 2nd phone -> allowed but flagged new_device', JSON.stringify(r.data));
 await call(admin, 'POST', `/api/incharge/trips/${trip.id}/end`, {}, csrf);

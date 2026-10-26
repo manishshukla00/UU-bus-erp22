@@ -27,7 +27,8 @@ const lastId = () => { try { return localStorage.getItem(LAST_KEY) || ''; } catc
 export default function Checkin() {
   const [phase, setPhase] = useState({ name: 'loading' });
   const onExpired = useCallback(() => setPhase({ name: 'scan', reason: 'EXPIRED' }), []);
-  const onDone = useCallback((r) => setPhase({ name: 'done', ...r }), []);
+  // a student with no photo on record takes a selfie first; everyone else goes straight to the card
+  const onDone = useCallback((r) => setPhase(r.needsPhoto ? { name: 'selfie', ...r } : { name: 'done', ...r }), []);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -60,6 +61,7 @@ export default function Checkin() {
       <main className="mx-auto my-6 w-[min(560px,94%)]">
         {phase.name === 'loading' && <Loading label="Opening verification…" />}
         {phase.name === 'form' && <VerifyForm trip={phase.trip} expiresAt={phase.expiresAt} onDone={onDone} onExpired={onExpired} />}
+        {phase.name === 'selfie' && <Selfie {...phase} onDone={onDone} onExpired={onExpired} />}
         {phase.name === 'done' && <Done {...phase} />}
         {phase.name === 'scan' && (
           <Notice icon="scan" title={phase.reason === 'TRIP_ENDED' ? 'This trip has ended' : 'Scan the bus QR code'}>
@@ -109,7 +111,7 @@ function VerifyForm({ trip, expiresAt, onDone, onExpired }) {
     try {
       const r = await api.post('/api/checkin/verify', { id });
       try { localStorage.setItem(LAST_KEY, id); } catch { /* storage blocked */ }
-      onDone({ trip: r.trip, student: r.student, boardedAt: r.boardedAt, already: r.already });
+      onDone({ trip: r.trip, student: r.student, boardedAt: r.boardedAt, already: r.already, needsPhoto: r.needsPhoto, id });
       return { error: null, id };
     } catch (e) {
       if (e.code === 'SESSION_EXPIRED' || e.code === 'TRIP_ENDED') onExpired();
@@ -135,6 +137,75 @@ function VerifyForm({ trip, expiresAt, onDone, onExpired }) {
         <Icon name="clock" className="size-3.5" />
         {left > 0 ? `This page stays open for ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}. Use your own phone.` : 'Expired. Scan the QR again.'}
       </p>
+    </section>
+  );
+}
+
+/*
+ * No photo on record: the student takes a selfie with the front camera. It is shrunk on the phone to
+ * a small JPEG (about 30 KB), sent with the same ID, saved for good, and the card shows it from then on.
+ */
+const PHOTO_W = 360;
+const PHOTO_H = 440;
+async function selfieDataUrl(file) {
+  const img = await createImageBitmap(file);
+  const scale = Math.max(PHOTO_W / img.width, PHOTO_H / img.height);
+  const w = img.width * scale;
+  const h = img.height * scale;
+  const canvas = document.createElement('canvas');
+  canvas.width = PHOTO_W;
+  canvas.height = PHOTO_H;
+  canvas.getContext('2d').drawImage(img, (PHOTO_W - w) / 2, (PHOTO_H - h) / 2, w, h);
+  img.close?.();
+  return canvas.toDataURL('image/jpeg', 0.82);
+}
+
+function Selfie({ trip, student, id, onDone, onExpired }) {
+  const [photo, setPhoto] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const take = async (file) => {
+    if (!file) return;
+    setError(null);
+    try { setPhoto(await selfieDataUrl(file)); } catch { setError('Could not read that photo. Try again.'); }
+  };
+  const send = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.post('/api/checkin/verify', { id, photo });
+      onDone({ trip: r.trip, student: r.student, boardedAt: r.boardedAt, already: r.already, needsPhoto: r.needsPhoto, id });
+    } catch (e) {
+      if (e.code === 'SESSION_EXPIRED' || e.code === 'TRIP_ENDED') onExpired();
+      setError(e.message);
+      setBusy(false);
+    }
+  };
+  const camera = (label, cls) => (
+    <label className={`${cls} cursor-pointer`}>
+      <Icon name="user" className="size-5" />{label}
+      <input type="file" accept="image/*" capture="user" className="sr-only" onChange={(e) => { take(e.target.files?.[0]); e.target.value = ''; }} />
+    </label>
+  );
+  return (
+    <section className="card p-[22px]">
+      <h2 className="text-xl font-bold text-navy">Take a selfie</h2>
+      <div className="mt-3"><TripBanner trip={trip} /></div>
+      <p className="text-muted">Hi <b className="text-navy">{student.name}</b>, there is no photo on your record yet. Take a clear selfie of your face; it is saved for next time, so you only do this once.</p>
+      <div className="mt-4 flex justify-center">
+        {photo
+          ? <img src={photo} alt="Your selfie" className="h-[220px] w-[180px] rounded-xl border-[3px] border-line object-cover" />
+          : <div className="flex h-[220px] w-[180px] items-center justify-center rounded-xl border-[3px] border-dashed border-line bg-brand-soft text-brand"><Icon name="user" className="size-16" strokeWidth={1.2} /></div>}
+      </div>
+      <div className="mt-4"><ErrorText>{error}</ErrorText></div>
+      <div className="mt-4 flex flex-col gap-3">
+        {photo ? (
+          <>
+            <button className="btn btn-primary w-full py-3.5 text-base" onClick={send} disabled={busy}>{busy ? 'Verifying student…' : 'Use this photo & verify'}</button>
+            {!busy && camera('Retake', 'btn w-full py-3')}
+          </>
+        ) : camera('Open camera', 'btn btn-primary w-full py-3.5 text-base')}
+      </div>
     </section>
   );
 }

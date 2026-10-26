@@ -98,6 +98,7 @@ function StudentForm({ student, buses, onClose, onSaved }) {
   const toast = useToast();
   const [busId, setBusId] = useState(student?.bus_id ?? '');
   const [photo, setPhoto] = useState(student?.photo_url || '');
+  const selfie = photo.startsWith('/api/photos/');
   const stops = buses.find((b) => String(b.id) === String(busId))?.stops || [];
   const [error, action, pending] = useActionState(async (_p, f) => {
     const body = {
@@ -118,10 +119,13 @@ function StudentForm({ student, buses, onClose, onSaved }) {
         <Field label="UUID"><input className="input font-mono uppercase" name="uuid" defaultValue={student?.uuid} required maxLength={40} /></Field>
         <Field label="Enrollment number" help="Students can verify with either number."><input className="input font-mono uppercase" name="enrollment_no" defaultValue={student?.enrollment_no} maxLength={40} /></Field>
         <Field label="Student name" className="sm:col-span-2"><input className="input" name="name" defaultValue={student?.name} required maxLength={80} /></Field>
-        <Field label="Photo URL" help="A public https link to the photo (shown on the verified card)." className="sm:col-span-2">
+        <Field label="Photo" help={selfie ? 'Selfie the student took at verification. Remove it and they take a new one next time.' : 'A public https link to the photo, or leave empty: the student is asked for a selfie at their next verification.'} className="sm:col-span-2">
           <div className="flex items-center gap-3">
             <Avatar src={photo} name={student?.name || '?'} className="size-12 text-sm" />
-            <input className="input" name="photo_url" type="url" placeholder="https://example.com/student.jpg" value={photo} onChange={(e) => setPhoto(e.target.value)} maxLength={500} />
+            {selfie
+              ? <><input type="hidden" name="photo_url" value={photo} /><span className="pill pill-ok">Selfie on file</span></>
+              : <input className="input" name="photo_url" type="text" inputMode="url" placeholder="https://example.com/student.jpg" value={photo} onChange={(e) => setPhoto(e.target.value)} maxLength={500} />}
+            {photo && <button type="button" className="btn btn-sm shrink-0" onClick={() => setPhoto('')}>Remove photo</button>}
           </div>
         </Field>
         <Field label="Bus">

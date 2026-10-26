@@ -1,4 +1,4 @@
-import { useActionState } from 'react';
+import { useActionState, useEffect } from 'react';
 import { api } from '../lib/api.js';
 import { navigate, useLocation } from '../lib/router.jsx';
 import { useSession } from '../lib/session.jsx';
@@ -10,6 +10,11 @@ const SAFE_NEXT = /^\/(admin|incharge|bus\/[A-Za-z0-9%._-]+)$/;
 
 export default function Login() {
   const { apply } = useSession();
+  // fetch the console and portal code while the user types, so the page after sign-in opens at once
+  useEffect(() => {
+    const t = setTimeout(() => { import('./admin/AdminApp.jsx'); import('./admin/Dashboard.jsx'); import('./portal/Portal.jsx'); }, 400);
+    return () => clearTimeout(t);
+  }, []);
   const { search } = useLocation();
   // React resets the form after the action; the typed Login ID comes back as its default value
   const [state, action, pending] = useActionState(async (_prev, form) => {

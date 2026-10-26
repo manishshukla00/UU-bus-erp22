@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { get, run, now } from '../db.js';
+import { get, run, batch, now } from '../db.js';
 import { config } from '../config.js';
 import { HttpError, validate, setCookie, clearCookie, clientIp, userAgent } from '../http.js';
 import { verifyPassword, hashPassword, burnPasswordCheck, randomId, sha256, passwordProblem } from '../security.js';
 import { SESSION_COOKIE, publicUser, requireAuthPendingOk } from '../middleware/auth.js';
 import { loginLimiter } from '../middleware/rateLimit.js';
-import { audit } from '../services/audit.js';
+import { audit, auditStmt } from '../services/audit.js';
 
 const router = Router();
 const LOCK_AFTER = 5;
@@ -28,23 +28,26 @@ router.post('/login', loginLimiter, async (req, res) => {
     throw new HttpError(423, `Account locked after repeated failures. Try again in ${mins} min.`);
   }
   if (!verifyPassword(password, user.password_hash)) {
-    // atomic increment so parallel guesses on different serverless instances still count
-    await run('UPDATE users SET failed_logins = failed_logins + 1 WHERE id = ?', user.id);
-    const fails = (await get('SELECT failed_logins FROM users WHERE id = ?', user.id)).failed_logins;
+    // atomic increment so parallel guesses on different serverless instances still count; one round
+    // trip bumps the counter, locks at the limit and records the attempt
+    const [{ rows: [{ failed_logins: fails }] }] = await batch([
+      ['UPDATE users SET failed_logins = failed_logins + 1 WHERE id = ? RETURNING failed_logins', user.id],
+      ['UPDATE users SET failed_logins = 0, locked_until = ? WHERE id = ? AND failed_logins >= ?', t + LOCK_MS, user.id, LOCK_AFTER],
+      auditStmt(req, 'login.failed', 'user', user.id, 'wrong password', { id: user.id, name: user.username }),
+    ]);
     const lock = fails >= LOCK_AFTER;
-    if (lock) await run('UPDATE users SET failed_logins = 0, locked_until = ? WHERE id = ?', t + LOCK_MS, user.id);
-    await audit(req, 'login.failed', 'user', user.id, lock ? 'account locked' : `attempt ${fails}`, { id: user.id, name: user.username });
     throw new HttpError(401, lock ? 'Too many failed attempts. Account locked for 15 minutes.' : 'Invalid username or password');
   }
-  await run('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = ?', user.id);
   const sid = randomId(32);
   const csrf = randomId(24);
-  await run(
-    'INSERT INTO sessions(id,user_id,csrf,ip,ua,created_at,expires_at,last_seen) VALUES(?,?,?,?,?,?,?,?)',
-    sha256(sid), user.id, csrf, clientIp(req), userAgent(req), t, t + config.sessionTtlMs, t,
-  );
+  // one round trip: reset the failure counter, open the session, record the sign-in
+  await batch([
+    ['UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = ? AND (failed_logins <> 0 OR locked_until IS NOT NULL)', user.id],
+    ['INSERT INTO sessions(id,user_id,csrf,ip,ua,created_at,expires_at,last_seen) VALUES(?,?,?,?,?,?,?,?)',
+      sha256(sid), user.id, csrf, clientIp(req), userAgent(req), t, t + config.sessionTtlMs, t],
+    auditStmt(req, 'login', 'user', user.id, '', { id: user.id, name: user.name }),
+  ]);
   setCookie(res, SESSION_COOKIE, sid, { maxAgeMs: config.sessionTtlMs, sameSite: 'Lax' });
-  await audit(req, 'login', 'user', user.id, '', { id: user.id, name: user.name });
   res.json({ user: publicUser(user), csrf, live: config.liveMode, pollMs: config.pollMs });
 });
 

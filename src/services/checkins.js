@@ -4,6 +4,7 @@ import { HttpError } from '../http.js';
 import { normUuid } from '../security.js';
 import { broadcast, tripScope } from './events.js';
 import { tripCounts } from './trips.js';
+import { savePhotoStmts } from './photos.js';
 
 const STUDENT_SQL = `SELECT s.*, st.name AS stop_name, b.number AS bus_number, b.name AS bus_name
   FROM students s LEFT JOIN stops st ON st.id = s.stop_id LEFT JOIN buses b ON b.id = s.bus_id`;
@@ -36,6 +37,112 @@ export function publicStudent(s, trip) {
     bus: s.bus_number ? { number: s.bus_number, name: s.bus_name } : null,
     ownBus: trip ? s.bus_id === trip.bus_id : null,
   };
+}
+
+const COUNTS_SQL = `SELECT (SELECT COUNT(*) FROM checkins WHERE trip_id = ?) AS boarded,
+  (SELECT COUNT(*) FROM checkins WHERE trip_id = ? AND flags <> '') AS flagged,
+  (SELECT COUNT(*) FROM students WHERE bus_id = ? AND active = 1) AS expected,
+  (SELECT COUNT(*) FROM duplicates WHERE trip_id = ?) AS duplicates`;
+const countsStmt = (trip) => [COUNTS_SQL, trip.id, trip.id, trip.bus_id, trip.id];
+const notFound = (trip, left) => new HttpError(404,
+  `Student not found for Bus ${trip.bus_number}. Check your UUID or enrollment number.${left > 0 ? ` ${left} attempt${left === 1 ? '' : 's'} left.` : ''}`,
+  { code: 'NO_MATCH', attemptsLeft: left });
+
+/**
+ * The student typed their UUID or enrollment number on a live check-in session. Same rules as
+ * confirmCheckin, arranged for a far-away database: one round trip counts the attempt and reads
+ * everything the rules need, one atomic round trip writes, one publishes the live event.
+ * Returns { student, already, at, flags }, or { student, needsPhoto: true } when a selfie is required
+ * first (the boarding is not recorded until it arrives).
+ */
+export async function verifyStudent({ session, trip, identifier, deviceId, ip, ua, maxLookups, photoRequired = false, selfie = null }) {
+  const id = normUuid(identifier);
+  const ts = now();
+  const since = ts - config.deviceWindowDays * 86_400_000;
+  // the student this identifier means (a UUID match wins over an enrollment-number match)
+  const pick = '(SELECT id FROM students WHERE (uuid = ? OR enrollment_no = ? COLLATE NOCASE) AND active = 1 ORDER BY (uuid = ?) DESC, id LIMIT 1)';
+  const [used, [student], [existing], [dev], [devUsed], [others]] = (await batch([
+    ['UPDATE checkin_sessions SET lookups = lookups + 1 WHERE id = ? AND lookups < ? RETURNING lookups', session.id, maxLookups],
+    [`${STUDENT_SQL} WHERE s.id = ${pick}`, id, id, id],
+    [`SELECT created_at FROM checkins WHERE trip_id = ? AND student_id = ${pick}`, trip.id, id, id, id],
+    ['SELECT student_id FROM devices WHERE id = ?', deviceId],
+    ['SELECT student_id FROM checkins WHERE trip_id = ? AND device_id = ?', trip.id, deviceId],
+    [`SELECT COUNT(*) AS c FROM devices WHERE student_id = ${pick} AND last_seen > ?`, id, id, id, since],
+  ])).map((r) => r.rows);
+  if (!used.length) throw new HttpError(429, 'Too many wrong attempts. Scan the QR again and check your ID with the incharge.', { code: 'LOOKUPS_EXHAUSTED' });
+  // only students registered on THIS bus can board it; anyone else is simply "not found"
+  if (!student || student.bus_id !== trip.bus_id) throw notFound(trip, maxLookups - used[0].lookups);
+
+  if (existing) {
+    // a repeat scan: show the card again and count it as a duplicate
+    const [, , { rows: [counts] }] = await batch([
+      ['UPDATE checkin_sessions SET student_id = ? WHERE id = ?', student.id, session.id],
+      ['INSERT INTO duplicates(trip_id, student_id, device_id, created_at) VALUES(?,?,?,?)', trip.id, student.id, deviceId ?? null, ts],
+      countsStmt(trip),
+    ]);
+    await broadcast('duplicate', { trip_id: trip.id, bus_id: trip.bus_id, uuid: student.uuid, name: student.name, created_at: ts, counts }, tripScope(trip));
+    return { student, already: true, at: existing.created_at, flags: [] };
+  }
+  if (devUsed) throw new HttpError(403, 'This phone was already used to board this trip. One phone, one student.', { code: 'DEVICE_USED' });
+  if (dev?.student_id && dev.student_id !== student.id) throw deviceBound();
+  const flags = [];
+  if (!dev?.student_id) {
+    if (others.c >= config.maxDevicesPerStudent) {
+      throw new HttpError(403, `You already used ${others.c} different phones recently. Ask the admin to reset your devices.`, { code: 'TOO_MANY_DEVICES' });
+    }
+    if (others.c > 0) flags.push('new_device');
+  }
+  // no photo on record: ask for a selfie before anything is written (the session remembers the student)
+  if (photoRequired && !student.photo_url && !selfie) {
+    await run('UPDATE checkin_sessions SET student_id = ? WHERE id = ?', student.id, session.id);
+    return { student, needsPhoto: true };
+  }
+
+  // a selfie for a student with no photo is stored in the same atomic write as the boarding
+  const photoWrites = selfie && !student.photo_url ? savePhotoStmts(student.id, selfie, deviceId) : [];
+  let results;
+  try {
+    results = await batch([
+      ...photoWrites,
+      [`INSERT INTO devices(id, student_id, ua, bound_at, first_seen, last_seen) VALUES(?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET student_id = COALESCE(devices.student_id, excluded.student_id),
+          bound_at = COALESCE(devices.bound_at, excluded.bound_at), last_seen = excluded.last_seen, ua = excluded.ua`,
+      deviceId, student.id, ua, ts, ts, ts],
+      // board only if the trip is still running and this phone belongs to this student
+      [`INSERT INTO checkins(trip_id, student_id, device_id, ip, method, flags, created_at)
+        SELECT ?, ?, ?, ?, 'qr', ?, ?
+         WHERE (SELECT status FROM trips WHERE id = ?) = 'active'
+           AND (SELECT student_id FROM devices WHERE id = ?) = ?
+           AND (SELECT bus_id FROM students WHERE id = ?) = (SELECT bus_id FROM trips WHERE id = ?)
+        RETURNING id`,
+      trip.id, student.id, deviceId, ip, flags.join(','), ts, trip.id, deviceId, student.id, student.id, trip.id],
+      ['UPDATE checkin_sessions SET student_id = ?, consumed_at = ? WHERE id = ? AND EXISTS (SELECT 1 FROM checkins WHERE trip_id = ? AND student_id = ?)', student.id, ts, session.id, trip.id, student.id],
+      countsStmt(trip),
+    ]);
+  } catch (e) { rethrowUnique(e); }
+  if (photoWrites.length) {
+    const url = results[1].rows[0]?.photo_url;
+    results = results.slice(2);
+    if (url) student.photo_url = url;
+  }
+  const checkinId = results[1].rows[0]?.id;
+  if (!checkinId) {
+    // a rule changed between our reads and the write; tell the student which one
+    const [t2, d2] = await Promise.all([get('SELECT status FROM trips WHERE id = ?', trip.id), get('SELECT student_id FROM devices WHERE id = ?', deviceId)]);
+    if (t2?.status !== 'active') throw new HttpError(410, 'This trip has ended. Ask the bus incharge.', { code: 'TRIP_ENDED' });
+    if (d2?.student_id !== student.id) throw deviceBound();
+    throw new HttpError(409, 'Could not record the boarding. Scan the QR again.', { code: 'RETRY' });
+  }
+  // the live event is built from what we already have: no reload of the check-in
+  const checkin = {
+    id: checkinId, trip_id: trip.id, created_at: ts, method: 'qr', flags: flags.join(','), note: '',
+    student_id: student.id, uuid: student.uuid, enrollment_no: student.enrollment_no, name: student.name, photo_url: student.photo_url,
+    course: student.course, year: student.year, specialization: student.specialization, stop: student.stop_name, marked_by_name: null,
+    bus_number: trip.bus_number, direction: trip.direction,
+  };
+  const eventTrip = { id: trip.id, bus_id: trip.bus_id, incharge_id: trip.incharge_id, direction: trip.direction, bus_number: trip.bus_number };
+  await broadcast('checkin', { checkin, trip: eventTrip, counts: results[3].rows[0] }, tripScope(eventTrip));
+  return { student, already: false, at: ts, flags };
 }
 
 /** A repeat scan of someone already verified on this trip: kept for the daily duplicates count. */

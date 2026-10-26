@@ -2,12 +2,13 @@ import { run, now } from '../db.js';
 import { clientIp } from '../http.js';
 
 /**
- * Append an immutable audit entry.
+ * The audit INSERT as a batch item, so it can ride in the same database round trip as the change
+ * it records: batch([...writes, auditStmt(req, 'thing.done', ...)]).
  * @param {import('express').Request|null} req  request (actor is taken from req.user unless actor is given)
  */
-export async function audit(req, action, entity = null, entityId = null, details = '', actor = null) {
+export function auditStmt(req, action, entity = null, entityId = null, details = '', actor = null) {
   const who = actor || req?.user || null;
-  await run(
+  return [
     'INSERT INTO audit_log(actor_id,actor_name,action,entity,entity_id,details,ip,created_at) VALUES(?,?,?,?,?,?,?,?)',
     who?.id ?? null,
     who?.name ?? who?.username ?? null,
@@ -17,5 +18,11 @@ export async function audit(req, action, entity = null, entityId = null, details
     typeof details === 'string' ? details : JSON.stringify(details),
     req ? clientIp(req) : null,
     now(),
-  );
+  ];
+}
+
+/** Append an immutable audit entry on its own. */
+export async function audit(...args) {
+  const [sql, ...params] = auditStmt(...args);
+  await run(sql, ...params);
 }

@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { all, get } from '../db.js';
+import { all, get, read } from '../db.js';
 import { config } from '../config.js';
 import { HttpError, validate, intParam } from '../http.js';
 import { requireAuth, canAccessBus, operatorReadOnly } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
 import { tokenFor, dayTokenFor, regenerateDayQr, qrMode, endOfIstDay, checkinUrl, qrSvg, secondsLeftInSlot, baseUrl } from '../services/qr.js';
-import { getTrip, getTripRaw, tripSummary, startTrip, endTrip, canAccessTrip, withCounts } from '../services/trips.js';
+import { getTrip, getTripRaw, getTripWithCounts, tripSummary, startTrip, endTrip, canAccessTrip } from '../services/trips.js';
 import { manualCheckin, studentByIdentifier } from '../services/checkins.js';
 
 const router = Router();
@@ -32,19 +32,22 @@ router.get('/state', async (req, res) => {
   let buses;
   let activeIds;
   if (busNo) {
-    const bus = await get('SELECT id, number, name, route, active FROM buses WHERE number = ?', busNo);
+    // the bus, its routes, student count, incharges and running trip: one round trip
+    const idOf = '(SELECT id FROM buses WHERE number = ?)';
+    const [[bus], stops, [students], incharges, running] = await read([
+      ['SELECT id, number, name, route, active FROM buses WHERE number = ?', busNo],
+      [`SELECT name FROM stops WHERE bus_id = ${idOf} ORDER BY seq, name`, busNo],
+      [`SELECT COUNT(*) AS c FROM students WHERE bus_id = ${idOf} AND active = 1`, busNo],
+      [`SELECT name FROM users WHERE bus_id = ${idOf} AND role = 'incharge' AND active = 1 ORDER BY name`, busNo],
+      [`SELECT id FROM trips WHERE status = 'active' AND bus_id = ${idOf}`, busNo],
+    ]);
     if (!bus || !bus.active) throw new HttpError(404, `Bus ${busNo} does not exist`);
     if (!canAccessBus(u, bus.id)) {
       throw new HttpError(403, `This portal belongs to Bus ${bus.number}. Your portal is Bus ${u.bus_number}.`, { code: 'WRONG_BUS_PORTAL', yourBus: u.bus_number });
     }
-    const [stops, students, incharges] = await Promise.all([
-      all('SELECT name FROM stops WHERE bus_id = ? ORDER BY seq, name', bus.id),
-      get('SELECT COUNT(*) AS c FROM students WHERE bus_id = ? AND active = 1', bus.id),
-      all("SELECT name FROM users WHERE bus_id = ? AND role = 'incharge' AND active = 1 ORDER BY name", bus.id),
-    ]);
-    scopedBus = { ...bus, stops: stops.map((s) => s.name), students: students.c, incharges: incharges.map((x) => x.name) };
+    scopedBus = { ...bus, stops: stops.map((x) => x.name), students: students.c, incharges: incharges.map((x) => x.name) };
     buses = [bus];
-    activeIds = await all("SELECT id FROM trips WHERE status = 'active' AND bus_id = ?", bus.id);
+    activeIds = running;
   } else {
     const everything = u.role === 'admin' || u.role === 'operator' || u.bus_id == null;
     buses = everything
@@ -54,7 +57,7 @@ router.get('/state', async (req, res) => {
       ? await all("SELECT id FROM trips WHERE status = 'active' ORDER BY started_at DESC")
       : await all("SELECT id FROM trips WHERE status = 'active' AND (incharge_id = ? OR bus_id = ?) ORDER BY started_at DESC", u.id, u.bus_id);
   }
-  const activeTrips = await Promise.all(activeIds.map(async (r) => withCounts(await getTrip(r.id))));
+  const activeTrips = await Promise.all(activeIds.map((r) => getTripWithCounts(r.id)));
   res.json({ user: u, buses, activeTrips, scopedBus, qr: { mode: await qrMode(), rotateSec: config.qrRotateSec, baseUrl: await baseUrl(req) } });
 });
 
@@ -94,8 +97,11 @@ router.post('/trips', async (req, res) => {
 });
 
 router.get('/trips/:id', async (req, res) => {
-  const trip = await tripForUser(req);
-  res.json(await tripSummary(trip.id));
+  // summary first (one round trip), then the access check on the trip it contains
+  const s = await tripSummary(intParam(req.params.id, 'trip id'));
+  if (!s) throw new HttpError(404, 'Trip not found');
+  if (!canAccessTrip(req.user, s.trip)) throw new HttpError(403, 'This trip belongs to another bus');
+  res.json(s);
 });
 
 router.get('/trips/:id/qr', async (req, res) => {

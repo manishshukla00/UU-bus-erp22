@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { all, get, run, batch, batchChunks, now, getSetting, setSetting, dbKind } from '../db.js';
+import { all, get, read, run, batch, batchChunks, now, getSetting, setSetting, dbKind } from '../db.js';
 import { config, lanIp } from '../config.js';
 import { HttpError, validate, intParam } from '../http.js';
 import { requireAuth, operatorReadOnly } from '../middleware/auth.js';
@@ -11,6 +11,7 @@ const viewCopy = (role, password) => (role === 'admin' ? null : sealPassword(pas
 import { audit } from '../services/audit.js';
 import { parseCsv, toCsv } from '../services/csv.js';
 import { importStudents, importBuses, importIncharges, importVerifications } from '../services/importer.js';
+import { isOwnPhotoUrl } from '../services/photos.js';
 import { tripSummary, listTrips, activeTrips, endTrip } from '../services/trips.js';
 import { clientCount } from '../services/events.js';
 import { baseUrl, qrMode, setQrMode } from '../services/qr.js';
@@ -86,8 +87,8 @@ async function dayReport(dateStr, busId) {
   const { start, end } = dayRange(dateStr);
   const busFilter = busId ? 'AND t.bus_id = ?' : '';
   const busParam = busId ? [busId] : [];
-  const [buses, verified, duplicates] = await Promise.all([
-    all(
+  const [buses, verified, duplicates] = await read([
+    [
       `SELECT b.id, b.number, b.name, b.route,
               (SELECT COUNT(*) FROM students s WHERE s.bus_id = b.id AND s.active = 1) AS students,
               (SELECT COUNT(DISTINCT c.student_id) FROM checkins c JOIN trips t ON t.id = c.trip_id WHERE t.bus_id = b.id AND c.created_at >= ? AND c.created_at < ?) AS verified,
@@ -97,22 +98,22 @@ async function dayReport(dateStr, busId) {
          FROM buses b LEFT JOIN trips t ON t.bus_id = b.id AND t.status = 'active'
         WHERE b.active = 1 ${busId ? 'AND b.id = ?' : ''} ORDER BY LENGTH(b.number), b.number`,
       start, end, start, end, start, end, ...busParam,
-    ),
-    all(
+    ],
+    [
       `SELECT c.id, c.trip_id, c.created_at, c.method, c.flags, s.id AS student_id, s.uuid, s.enrollment_no, s.name, s.photo_url, s.course,
               st.name AS stop, b.number AS bus_number, t.direction, m.name AS marked_by_name
          FROM checkins c JOIN students s ON s.id = c.student_id JOIN trips t ON t.id = c.trip_id JOIN buses b ON b.id = t.bus_id
          LEFT JOIN stops st ON st.id = s.stop_id LEFT JOIN users m ON m.id = c.marked_by
         WHERE c.created_at >= ? AND c.created_at < ? ${busFilter} ORDER BY c.created_at DESC LIMIT 5000`,
       start, end, ...busParam,
-    ),
-    all(
+    ],
+    [
       `SELECT d.id, d.trip_id, d.created_at, s.id AS student_id, s.uuid, s.enrollment_no, s.name, s.course, st.name AS stop, b.number AS bus_number, t.direction
          FROM duplicates d JOIN students s ON s.id = d.student_id JOIN trips t ON t.id = d.trip_id JOIN buses b ON b.id = t.bus_id
          LEFT JOIN stops st ON st.id = s.stop_id
         WHERE d.created_at >= ? AND d.created_at < ? ${busFilter} ORDER BY d.created_at DESC LIMIT 2000`,
       start, end, ...busParam,
-    ),
+    ],
   ]);
   const totals = buses.reduce((a, b) => ({
     students: a.students + b.students, verified: a.verified + b.verified, boardings: a.boardings + b.boardings, duplicates: a.duplicates + b.duplicates, live: a.live + (b.live_trip ? 1 : 0),
@@ -145,7 +146,8 @@ const studentSchema = z.object({
   uuid: str(40, 2).transform(normUuid),
   enrollment_no: str(40).default('').transform(normUuid),
   name: str(80, 2),
-  photo_url: str(500).default('').refine((v) => v === '' || /^https:\/\/[^\s"'<>]+$/i.test(v), 'Photo URL must start with https://'),
+  // an https link, or the selfie the student took (kept as is; clearing it removes the selfie)
+  photo_url: str(500).default('').refine((v) => v === '' || /^https:\/\/[^\s"'<>]+$/i.test(v) || /^\/api\/photos\/\d+\?v=\d+$/.test(v), 'Photo URL must start with https://'),
   course: str(80).default(''),
   year: str(20).default(''),
   specialization: str(80).default(''),
@@ -202,6 +204,8 @@ router.put('/students/:id', async (req, res) => {
     'UPDATE students SET uuid=?, enrollment_no=?, name=?, photo_url=?, course=?, year=?, specialization=?, bus_id=?, stop_id=?, phone=?, active=?, updated_at=? WHERE id = ?',
     d.uuid, d.enrollment_no, d.name, d.photo_url, d.course, d.year, d.specialization, d.bus_id, d.stop_id, d.phone, d.active, now(), id,
   );
+  // photo removed (or replaced by a link): drop the stored selfie, so the next verification asks again
+  if (!isOwnPhotoUrl(d.photo_url, id)) await run('DELETE FROM student_photos WHERE student_id = ?', id);
   await audit(req, 'student.update', 'student', id, `${d.uuid} ${d.name}`);
   res.json({ ok: true });
 });
@@ -217,6 +221,7 @@ router.delete('/students/:id', async (req, res) => {
   }
   await batch([
     ['UPDATE devices SET student_id = NULL, bound_at = NULL WHERE student_id = ?', id],
+    ['DELETE FROM student_photos WHERE student_id = ?', id],
     ['DELETE FROM students WHERE id = ?', id],
   ]);
   await audit(req, 'student.delete', 'student', id, `${s.uuid} ${s.name}`);

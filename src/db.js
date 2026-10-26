@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createClient as createWebClient } from '@libsql/client/web';
 import { config, credentialsFile } from './config.js';
 import { hashPassword, generatePassword, passwordProblem } from './security.js';
@@ -33,7 +34,16 @@ async function nodeDriver(file) {
     if (!s) { s = db.prepare(sql); cache.set(sql, s); }
     return s;
   };
-  const runOne = (sql, args) => { const r = prep(sql).run(...args); return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid) }; };
+  // statements that return rows (SELECT, RETURNING) hand them back in .rows, like the libSQL driver
+  const returnsRows = (sql) => /^\s*(select|with)\b/i.test(sql) || /\breturning\b/i.test(sql);
+  const runOne = (sql, args) => {
+    if (returnsRows(sql)) {
+      const rows = prep(sql).all(...args);
+      return { changes: /^\s*(select|with)\b/i.test(sql) ? 0 : rows.length, lastInsertRowid: null, rows };
+    }
+    const r = prep(sql).run(...args);
+    return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid), rows: [] };
+  };
   // node:sqlite is synchronous: every call (and every batch) completes before any other request runs.
   return {
     kind: 'sqlite',
@@ -41,6 +51,7 @@ async function nodeDriver(file) {
     get: async (sql, p) => prep(sql).get(...norm(p)),
     all: async (sql, p) => prep(sql).all(...norm(p)),
     exec: async (sql) => db.exec(sql),
+    read: async (items) => items.map((it) => { const s = stmtOf(it); return prep(s.sql).all(...s.args); }),
     batch: async (items) => {
       db.exec('BEGIN IMMEDIATE');
       try {
@@ -73,7 +84,7 @@ async function libsqlDriver(url, authToken) {
     rs.columns.forEach((c, i) => { o[c] = r[i]; });
     return o;
   });
-  const resOf = (rs) => ({ changes: rs.rowsAffected, lastInsertRowid: rs.lastInsertRowid == null ? null : Number(rs.lastInsertRowid) });
+  const resOf = (rs) => ({ changes: rs.rowsAffected, lastInsertRowid: rs.lastInsertRowid == null ? null : Number(rs.lastInsertRowid), rows: rowsOf(rs) });
   const exe = (sql, p) => client.execute({ sql, args: norm(p) });
   return {
     kind: 'libsql',
@@ -81,6 +92,8 @@ async function libsqlDriver(url, authToken) {
     get: async (sql, p) => rowsOf(await exe(sql, p))[0],
     all: async (sql, p) => rowsOf(await exe(sql, p)),
     exec: (sql) => client.executeMultiple(sql),
+    // several SELECTs in ONE network round trip (a hosted database is far away; each trip costs)
+    read: async (items) => (await client.batch(items.map(stmtOf), 'read')).map(rowsOf),
     batch: async (items) => (await client.batch(items.map(stmtOf), 'write')).map(resOf),
     close: async () => { try { client.close(); } catch { /* ignore */ } },
   };
@@ -96,11 +109,25 @@ function driver() {
 }
 
 export const dbKind = () => (config.dbUrl ? (config.dbUrl.startsWith('file:') ? 'libsql-file' : 'turso') : 'sqlite');
-export const run = async (sql, ...params) => (await driver()).run(sql, params);
-export const get = async (sql, ...params) => (await driver()).get(sql, params);
-export const all = async (sql, ...params) => (await driver()).all(sql, params);
+/*
+ * Round-trip accounting per request (shown in the Server-Timing response header): with a hosted
+ * database every call is a network round trip, so this is the number that decides speed.
+ */
+export const dbStats = new AsyncLocalStorage();
+async function timed(fn) {
+  const s = dbStats.getStore();
+  if (!s) return fn();
+  const t = performance.now();
+  try { return await fn(); } finally { s.n++; s.ms += performance.now() - t; }
+}
+
+export const run = async (sql, ...params) => timed(async () => (await driver()).run(sql, params));
+export const get = async (sql, ...params) => timed(async () => (await driver()).get(sql, params));
+export const all = async (sql, ...params) => timed(async () => (await driver()).all(sql, params));
+/** Several SELECTs in one round trip. Items: 'SQL' or ['SQL', ...params]; returns one row array per item. */
+export const read = async (items) => (items.length ? timed(async () => (await driver()).read(items)) : []);
 /** Atomic list of writes in one round trip: all succeed or none. Items: 'SQL' or ['SQL', ...params]. */
-export const batch = async (items) => (items.length ? (await driver()).batch(items) : []);
+export const batch = async (items) => (items.length ? timed(async () => (await driver()).batch(items)) : []);
 /** Big write lists in atomic chunks (keeps each request to the hosted database small). */
 export async function batchChunks(items, size = 400) {
   const out = [];
@@ -327,6 +354,16 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS duplicates_trip ON duplicates(trip_id);
   CREATE INDEX IF NOT EXISTS duplicates_created ON duplicates(created_at);
   `,
+  // v8: selfies taken at first verification by students with no photo (base64 JPEG, kept until removed)
+  `
+  CREATE TABLE IF NOT EXISTS student_photos (
+    student_id INTEGER PRIMARY KEY REFERENCES students(id) ON DELETE CASCADE,
+    mime TEXT NOT NULL,
+    data TEXT NOT NULL,
+    device_id TEXT,
+    created_at INTEGER NOT NULL
+  );
+  `,
 ];
 const splitSql = (sql) => sql.split(/;\s*\n/).map((s) => s.trim().replace(/;$/, '')).filter(Boolean);
 
@@ -355,8 +392,24 @@ export async function migrate() {
   return version;
 }
 
-export const getSetting = async (key, fallback = '') => (await get('SELECT value FROM settings WHERE key = ?', key))?.value ?? fallback;
-export const setSetting = (key, value) => run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, String(value));
+/*
+ * Settings are read on every QR refresh and scan but change rarely: all of them are loaded in one
+ * query and kept for a few seconds per server instance. A change made on this instance is seen at
+ * once; other serverless instances see it within SETTINGS_TTL_MS.
+ */
+const SETTINGS_TTL_MS = 10_000;
+let settingsCache = null;
+async function settingsMap() {
+  if (settingsCache && settingsCache.at > Date.now() - SETTINGS_TTL_MS) return settingsCache.map;
+  const rows = await all('SELECT key, value FROM settings');
+  settingsCache = { at: Date.now(), map: new Map(rows.map((r) => [r.key, r.value])) };
+  return settingsCache.map;
+}
+export const getSetting = async (key, fallback = '') => (await settingsMap()).get(key) ?? fallback;
+export async function setSetting(key, value) {
+  await run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, String(value));
+  if (settingsCache) settingsCache.map.set(key, String(value));
+}
 
 /**
  * Create the first admin if no users exist.
@@ -397,6 +450,11 @@ let readyPromise = null;
 export function ready() {
   if (!readyPromise) {
     readyPromise = (async () => {
+      // fast path (every serverless cold start): schema current and an admin exists -> one round trip
+      try {
+        const [[v], [u]] = await read(['SELECT MAX(version) AS v FROM schema_version', 'SELECT COUNT(*) AS c FROM users']);
+        if (v?.v === MIGRATIONS.length && u?.c > 0) return { version: v.v, firstAdmin: null };
+      } catch { /* new database: full setup below */ }
       const version = await migrate();
       const firstAdmin = await bootstrapAdmin();
       if (firstAdmin?.missing) console.warn('No admin account yet. Set ADMIN_PASSWORD or run "npm run seed:buses" against this database.');

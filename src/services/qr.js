@@ -83,10 +83,14 @@ export async function verifyToken(token, ms = Date.now()) {
     if (!Number.isInteger(busId) || busId <= 0 || day !== istDay(ms)) return { error: 'QR_EXPIRED' };
     if ((await qrMode()) !== 'day') return { error: 'QR_EXPIRED' };
     if (!safeEqual(parts[2], daySig(busId, day, await busNonce(busId)))) return { error: 'QR_EXPIRED' };
-    const bus = await get('SELECT id, number FROM buses WHERE id = ? AND active = 1', busId);
-    if (!bus) return { error: 'QR_EXPIRED' };
-    const trip = await get("SELECT * FROM trips WHERE bus_id = ? AND status = 'active'", busId);
-    return trip ? { trip } : { error: 'NO_TRIP', bus };
+    // the bus and its running trip (with the bus details the phone shows) in one query
+    const row = await get(
+      `SELECT b.id AS b_id, b.number AS bus_number, b.name AS bus_name, b.route AS bus_route, t.*
+         FROM buses b LEFT JOIN trips t ON t.bus_id = b.id AND t.status = 'active' WHERE b.id = ? AND b.active = 1`,
+      busId,
+    );
+    if (!row) return { error: 'QR_EXPIRED' };
+    return row.id ? { trip: row } : { error: 'NO_TRIP', bus: { id: row.b_id, number: row.bus_number } };
   }
 
   const tripId = Number(parts[0]);
@@ -94,7 +98,11 @@ export async function verifyToken(token, ms = Date.now()) {
   if (!Number.isInteger(tripId) || tripId <= 0 || !Number.isInteger(slot)) return { error: 'QR_EXPIRED' };
   const cur = slotOf(ms);
   if (slot > cur || slot < cur - config.qrGraceSlots) return { error: 'QR_EXPIRED' };
-  const trip = await get('SELECT * FROM trips WHERE id = ? AND status = ?', tripId, 'active');
+  const trip = await get(
+    `SELECT t.*, b.number AS bus_number, b.name AS bus_name, b.route AS bus_route
+       FROM trips t JOIN buses b ON b.id = t.bus_id WHERE t.id = ? AND t.status = 'active'`,
+    tripId,
+  );
   if (!trip || !safeEqual(parts[2], sigFor(trip, `${tripId}.${slot}`))) return { error: 'QR_EXPIRED' };
   return { trip };
 }
