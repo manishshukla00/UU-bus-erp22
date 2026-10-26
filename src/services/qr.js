@@ -4,7 +4,12 @@ import { hmac, safeEqual, randomId } from '../security.js';
 import { get, getSetting, setSetting } from '../db.js';
 
 /*
- * Two QR modes (Admin → Settings):
+ * Three QR modes (Admin → Settings):
+ *
+ *  'trip'     (default) One QR per trip, valid for N hours (default 2) from the trip's start. A photo of
+ *             it is useless on any other trip, and after N hours. "New QR code" cancels it and gives
+ *             a fresh N hours from now.
+ *             token = t<tripId>.<windowStart>.<hmac(tripSecret|serverSecret, trip|tripId|windowStart)>
  *
  *  'day'      One QR per bus per calendar day (India time). It works for whichever trip that bus is
  *             running, so it can be shown all day or printed. "New QR code" invalidates it at once.
@@ -18,8 +23,29 @@ const SIG_LEN = 27;
 const IST_OFFSET_MS = 330 * 60_000;
 const DAY_MS = 86_400_000;
 
-export const qrMode = async () => ((await getSetting('qr_mode', config.qrModeDefault)) === 'rotating' ? 'rotating' : 'day');
-export const setQrMode = (mode) => setSetting('qr_mode', mode === 'rotating' ? 'rotating' : 'day');
+const MODES = ['trip', 'day', 'rotating'];
+export const qrMode = async () => {
+  const m = await getSetting('qr_mode', config.qrModeDefault);
+  return MODES.includes(m) ? m : config.qrModeDefault;
+};
+export const setQrMode = (mode) => setSetting('qr_mode', MODES.includes(mode) ? mode : config.qrModeDefault);
+
+// ------------------------------------------------------------------ per trip, N hours
+const clampHours = (h) => Math.min(12, Math.max(0.5, Number(h) || config.qrTripHours));
+export const qrTripHours = async () => clampHours(await getSetting('qr_trip_hours', String(config.qrTripHours)));
+export const setQrTripHours = (h) => setSetting('qr_trip_hours', String(clampHours(h)));
+/** When the trip's current QR window began: the trip start, or the last "New QR code". */
+const tripWindowStart = async (trip) => Number(await getSetting(`qr_trip_start:${trip.id}`, '0')) || trip.started_at;
+const tripSig = (trip, ws) => hmac(trip.secret + '|' + config.sessionSecret, `trip|${trip.id}|${ws}`).slice(0, SIG_LEN);
+
+/** { token, validUntil } of the trip's QR. `trip` needs id, secret and started_at. */
+export async function tripTokenFor(trip) {
+  const ws = await tripWindowStart(trip);
+  return { token: `t${trip.id}.${ws}.${tripSig(trip, ws)}`, validUntil: ws + (await qrTripHours()) * 3_600_000 };
+}
+
+/** "New QR code" on a trip: the old QR stops working; the new one is valid N hours from now. */
+export const regenerateTripQr = (tripId) => setSetting(`qr_trip_start:${tripId}`, String(Date.now()));
 
 // ------------------------------------------------------------------ rotating (per trip)
 const slotOf = (ms) => Math.floor(ms / 1000 / config.qrRotateSec);
@@ -76,6 +102,22 @@ export async function verifyToken(token, ms = Date.now()) {
   if (typeof token !== 'string' || token.length > 120) return { error: 'QR_EXPIRED' };
   const parts = token.split('.');
   if (parts.length !== 3) return { error: 'QR_EXPIRED' };
+
+  if (parts[0].startsWith('t')) {
+    const tripId = Number(parts[0].slice(1));
+    const ws = Number(parts[1]);
+    if (!Number.isInteger(tripId) || tripId <= 0 || !Number.isInteger(ws) || ws <= 0) return { error: 'QR_EXPIRED' };
+    if ((await qrMode()) !== 'trip') return { error: 'QR_EXPIRED' };
+    const trip = await get(
+      `SELECT t.*, b.number AS bus_number, b.name AS bus_name, b.route AS bus_route
+         FROM trips t JOIN buses b ON b.id = t.bus_id WHERE t.id = ? AND t.status = 'active'`,
+      tripId,
+    );
+    if (!trip || !safeEqual(parts[2], tripSig(trip, ws))) return { error: 'QR_EXPIRED' };
+    // only the trip's current QR, and only within its N hours
+    if (ws !== (await tripWindowStart(trip)) || ms >= ws + (await qrTripHours()) * 3_600_000) return { error: 'QR_EXPIRED' };
+    return { trip };
+  }
 
   if (parts[0].startsWith('d')) {
     const busId = Number(parts[0].slice(1));

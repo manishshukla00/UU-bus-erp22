@@ -96,8 +96,11 @@ Useful scripts:
 
 1. **Incharge** signs in, lands on their bus portal, picks **Morning** (to college) or
    **Evening** (from college) and presses *Start trip*.
-2. The portal shows the bus's QR. Two modes (Admin → Settings → QR validity):
-   * **Whole day** (default): one QR per bus per calendar day, India time. It works for whichever
+2. The portal shows the bus's QR. Three modes (Admin → Settings → QR validity):
+   * **Per trip** (default): each trip gets its own QR, valid for 2 hours from the trip start
+     (the hours can be changed). After that the portal shows "QR expired"; **New QR code** gives
+     another 2 hours. A photo of it is useless on any other trip.
+   * **Whole day**: one QR per bus per calendar day, India time. It works for whichever
      trip the bus is running, can be printed, and **New QR code** on the portal cancels it.
    * **Rotating**: a new QR every 20 seconds, bound to the trip; only the live screen works.
 3. **Student** scans with the normal camera app. The server checks the token and opens a
@@ -145,7 +148,8 @@ Copy `.env.example` to `.env`. Everything is optional.
 | `TRUST_PROXY` | off | set `1` behind nginx / Cloudflare so real IPs are logged and limited |
 | `SESSION_SECRET` | generated once into `data/secret.key` | signing key for sessions, device ids and QR tokens |
 | `SESSION_HOURS` | `12` | staff session idle lifetime |
-| `QR_MODE` | `day` | QR mode until an admin changes it in Settings: `day` (one QR per bus per day) or `rotating` |
+| `QR_MODE` | `trip` | QR mode until an admin changes it in Settings: `trip` (one QR per trip, valid `QR_TRIP_HOURS`), `day` (one QR per bus per day) or `rotating` |
+| `QR_TRIP_HOURS` | `2` | `trip` mode: hours a trip's QR stays valid (0.5–12; also in Settings) |
 | `QR_ROTATE_SECONDS` | `20` | rotating mode: QR refresh interval (minimum 10) |
 | `QR_GRACE_SLOTS` | `1` | how many previous QR windows are still valid |
 | `CHECKIN_MINUTES` | `5` | time a student has to finish after scanning |

@@ -5,7 +5,7 @@ import { config } from '../config.js';
 import { HttpError, validate, intParam } from '../http.js';
 import { requireAuth, canAccessBus, operatorReadOnly } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
-import { tokenFor, dayTokenFor, regenerateDayQr, qrMode, endOfIstDay, checkinUrl, qrSvg, secondsLeftInSlot, baseUrl } from '../services/qr.js';
+import { tokenFor, dayTokenFor, tripTokenFor, regenerateDayQr, regenerateTripQr, qrMode, qrTripHours, endOfIstDay, checkinUrl, qrSvg, secondsLeftInSlot, baseUrl } from '../services/qr.js';
 import { getTrip, getTripRaw, getTripWithCounts, tripSummary, startTrip, endTrip, canAccessTrip } from '../services/trips.js';
 import { manualCheckin, studentByIdentifier } from '../services/checkins.js';
 
@@ -112,7 +112,13 @@ router.get('/trips/:id/qr', async (req, res) => {
   let token;
   let secondsLeft;
   let validUntil;
-  if (mode === 'day') {
+  let expired = false;
+  if (mode === 'trip') {
+    // one QR for this trip, valid N hours from the trip start (or the last "New QR code")
+    ({ token, validUntil } = await tripTokenFor(await getTripRaw(trip.id)));
+    expired = now >= validUntil;
+    secondsLeft = expired ? 30 : Math.max(1, Math.min(300, Math.ceil((validUntil - now) / 1000)));
+  } else if (mode === 'day') {
     token = await dayTokenFor(trip.bus_id, now);
     validUntil = endOfIstDay(now);
     // the code itself only changes at midnight or on "New QR code"; re-check every few minutes
@@ -125,14 +131,16 @@ router.get('/trips/:id/qr', async (req, res) => {
   const url = await checkinUrl(token, trip.bus_number, req);
   const svg = await qrSvg(url);
   res.set('Cache-Control', 'no-store');
-  res.json({ mode, token, url, svg, rotateSec: config.qrRotateSec, secondsLeft, validUntil, serverTime: now });
+  res.json({ mode, token, url, svg, rotateSec: config.qrRotateSec, tripHours: await qrTripHours(), expired, secondsLeft, validUntil, serverTime: now });
 });
 
 /** Whole-day mode: replace this bus's QR now (e.g. a photo of it was shared). */
 router.post('/trips/:id/new-qr', async (req, res) => {
   const trip = await tripForUser(req);
-  await regenerateDayQr(trip.bus_id);
-  await audit(req, 'qr.regenerate', 'bus', trip.bus_id, `bus ${trip.bus_number}`);
+  const mode = await qrMode();
+  if (mode === 'trip') await regenerateTripQr(trip.id);
+  else await regenerateDayQr(trip.bus_id);
+  await audit(req, 'qr.regenerate', mode === 'trip' ? 'trip' : 'bus', mode === 'trip' ? trip.id : trip.bus_id, `bus ${trip.bus_number}${mode === 'trip' ? `, trip ${trip.id}` : ''}`);
   res.json({ ok: true });
 });
 

@@ -14,7 +14,7 @@ import { importStudents, importBuses, importIncharges, importVerifications } fro
 import { isOwnPhotoUrl } from '../services/photos.js';
 import { tripSummary, listTrips, activeTrips, endTrip } from '../services/trips.js';
 import { clientCount } from '../services/events.js';
-import { baseUrl, qrMode, setQrMode } from '../services/qr.js';
+import { baseUrl, qrMode, setQrMode, qrTripHours, setQrTripHours } from '../services/qr.js';
 import { seedFleet, FLEET } from '../services/fleet.js';
 import { addDemoStudents, removeDemoStudents } from '../services/demo.js';
 
@@ -590,6 +590,7 @@ router.get('/settings', async (req, res) => {
     lanIp: config.serverless ? null : lanIp(),
     port: config.port,
     qrMode: await qrMode(),
+    qrTripHours: await qrTripHours(),
     qrRotateSec: config.qrRotateSec,
     checkinMinutes: config.checkinTtlMs / 60_000,
     maxDevicesPerStudent: config.maxDevicesPerStudent,
@@ -599,10 +600,11 @@ router.get('/settings', async (req, res) => {
 
 /** Partial update: send only what changes (base_url and/or qr_mode). */
 router.put('/settings', async (req, res) => {
-  const { base_url, qr_mode } = validate(
+  const { base_url, qr_mode, qr_trip_hours } = validate(
     z.object({
       base_url: z.string().trim().max(200).refine((v) => v === '' || /^https?:\/\/[^\s/?#]+$/i.test(v), 'Use the form http://192.168.1.5:3000 or https://bus.college.edu (no path)').optional(),
-      qr_mode: z.enum(['day', 'rotating']).optional(),
+      qr_mode: z.enum(['trip', 'day', 'rotating']).optional(),
+      qr_trip_hours: z.coerce.number().min(0.5).max(12).optional(),
     }),
     req.body,
   );
@@ -612,9 +614,14 @@ router.put('/settings', async (req, res) => {
   }
   if (qr_mode) {
     await setQrMode(qr_mode);
-    await audit(req, 'settings.update', 'settings', 'qr_mode', qr_mode === 'day' ? 'QR valid for the whole day' : `QR rotates every ${config.qrRotateSec}s`);
+    const label = { trip: `one QR per trip, valid ${await qrTripHours()} h`, day: 'QR valid for the whole day', rotating: `QR rotates every ${config.qrRotateSec}s` }[qr_mode];
+    await audit(req, 'settings.update', 'settings', 'qr_mode', label);
   }
-  res.json({ ok: true, effectiveBaseUrl: await baseUrl(req), qrMode: await qrMode() });
+  if (qr_trip_hours != null) {
+    await setQrTripHours(qr_trip_hours);
+    await audit(req, 'settings.update', 'settings', 'qr_trip_hours', `trip QR valid ${await qrTripHours()} h`);
+  }
+  res.json({ ok: true, effectiveBaseUrl: await baseUrl(req), qrMode: await qrMode(), qrTripHours: await qrTripHours() });
 });
 
 export default router;

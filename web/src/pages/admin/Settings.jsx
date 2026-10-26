@@ -11,6 +11,11 @@ export default function Settings() {
     try { await api.put('/api/admin/settings', { base_url: String(f.get('base_url') || '').trim() }); toast('Saved', 'success'); reload(); return null; } catch (e) { return e.message; }
   }, null);
 
+  const setHours = async (hours) => {
+    setSavingMode(true);
+    try { await api.put('/api/admin/settings', { qr_trip_hours: Number(hours) }); toast('QR hours updated', 'success'); reload(); } catch (e) { toast(e.message, 'error'); } finally { setSavingMode(false); }
+  };
+
   const setMode = async (qr_mode) => {
     setSavingMode(true);
     try { await api.put('/api/admin/settings', { qr_mode }); toast('QR validity updated', 'success'); reload(); } catch (e) { toast(e.message, 'error'); } finally { setSavingMode(false); }
@@ -19,6 +24,7 @@ export default function Settings() {
   if (loading && !data) return <Loading />;
   if (error) return <div className="card"><Empty icon="alert">{error.message}</Empty></div>;
   const modes = [
+    ['trip', `Per trip, ${data.qrTripHours} hours`, `Each trip gets its own QR, valid for ${data.qrTripHours} hours from the start of the trip. A photo of it is useless on any other trip. The incharge can press "New QR code" for another ${data.qrTripHours} hours.`],
     ['day', 'Whole day', 'One QR per bus per day (India time). Can be printed and stuck in the bus. The incharge can cancel it with "New QR code" if a photo of it is shared.'],
     ['rotating', `Rotating every ${data.qrRotateSec} s`, 'Strongest protection: only the live screen works, screenshots expire within seconds. The incharge must keep the portal open.'],
   ];
@@ -26,7 +32,7 @@ export default function Settings() {
     <div className="mx-auto flex max-w-3xl flex-col gap-5">
       <section className="card p-6">
         <h2 className="text-lg font-bold text-navy">QR validity</h2>
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
           {modes.map(([k, title, text]) => (
             <button key={k} disabled={savingMode} onClick={() => data.qrMode !== k && setMode(k)}
               className={`rounded-2xl border-2 p-4 text-left transition-all duration-200 hover:-translate-y-0.5 ${data.qrMode === k ? 'border-brand bg-brand-soft shadow-[var(--shadow-lift)]' : 'border-line hover:border-brand/50'}`}>
@@ -35,6 +41,14 @@ export default function Settings() {
             </button>
           ))}
         </div>
+        {data.qrMode === 'trip' && (
+          <form className="mt-4 flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); setHours(new FormData(e.currentTarget).get('hours')); }}>
+            <Field label="Hours a trip's QR stays valid" help="From 0.5 to 12 hours.">
+              <input className="input w-32" name="hours" type="number" min="0.5" max="12" step="0.5" defaultValue={data.qrTripHours} key={data.qrTripHours} />
+            </Field>
+            <button className="btn mb-[22px]" type="submit" disabled={savingMode}>Save hours</button>
+          </form>
+        )}
       </section>
       <section className="card p-6">
         <h2 className="text-lg font-bold text-navy">Public address</h2>

@@ -7,7 +7,7 @@
  * incharge account. Uses bus 12 of the seeded fleet. Safe to re-run.
  */
 import { tokenFor, dayTokenFor } from '../src/services/qr.js';
-import { get } from '../src/db.js';
+import { get, run } from '../src/db.js';
 
 const BASE = (process.env.BASE || 'http://localhost:3000').replace(/\/+$/, '');
 const ADMIN_PW = process.env.ADMIN_PW;
@@ -209,6 +209,36 @@ ok(q.token !== dayTok && r.status === 200, 'the new day QR works');
 r = await call(admin, 'PUT', '/api/admin/settings', { qr_mode: 'rotating' }, csrf);
 r = await call(jar(), 'POST', '/api/checkin/session', { token: q.token });
 ok(r.status === 410, 'switching back to rotating cancels day QRs', r.status);
+
+console.log('\n[qr token: per trip, N hours]');
+r = await call(admin, 'PUT', '/api/admin/settings', { qr_mode: 'trip', qr_trip_hours: 2 }, csrf);
+ok(r.status === 200 && r.data.qrMode === 'trip' && r.data.qrTripHours === 2, 'admin switches to one QR per trip, 2 hours', JSON.stringify(r.data));
+q = (await call(admin, 'GET', `/api/incharge/trips/${trip.id}/qr`)).data;
+ok(q.mode === 'trip' && /\/checkin\/12\?t=t/.test(q.url) && !q.expired && q.validUntil > Date.now() && q.validUntil <= Date.now() + 2 * 3_600_000 + 5000, 'trip QR is valid until 2 hours after its window start', JSON.stringify({ url: q.url, validUntil: q.validUntil }));
+const tripTok = q.token;
+r = await call(jar(), 'POST', '/api/checkin/session', { token: tripTok, bus: '12' });
+ok(r.status === 200 && r.data.trip.id === trip.id, 'the trip QR opens this trip');
+r = await call(jar(), 'POST', '/api/checkin/session', { token: tripTok.slice(0, -2) + 'zz' });
+ok(r.status === 410, 'tampered trip QR -> 410', r.status);
+r = await call(jar(), 'POST', '/api/checkin/session', { token: `t${trip.id}.${Number(tripTok.split('.')[1]) + 1}.${tripTok.split('.')[2]}` });
+ok(r.status === 410, 'trip QR with a moved start time -> 410', r.status);
+// pretend the trip started 3 hours ago (the window starts at the trip start until "New QR code")
+const realStart = (await get('SELECT started_at FROM trips WHERE id = ?', trip.id)).started_at;
+await run('UPDATE trips SET started_at = ? WHERE id = ?', realStart - 3 * 3_600_000, trip.id);
+q = (await call(admin, 'GET', `/api/incharge/trips/${trip.id}/qr`)).data;
+r = await call(jar(), 'POST', '/api/checkin/session', { token: q.token });
+ok(q.expired && r.status === 410, 'after 2 hours the trip QR is expired and refused', JSON.stringify({ expired: q.expired, status: r.status }));
+r = await call(admin, 'POST', `/api/incharge/trips/${trip.id}/new-qr`, {}, csrf);
+ok(r.status === 200, 'New QR code on the trip');
+q = (await call(admin, 'GET', `/api/incharge/trips/${trip.id}/qr`)).data;
+r = await call(jar(), 'POST', '/api/checkin/session', { token: q.token });
+ok(!q.expired && q.validUntil > Date.now() + 2 * 3_600_000 - 60_000 && r.status === 200, 'the new trip QR works for another 2 hours', JSON.stringify({ expired: q.expired }));
+r = await call(jar(), 'POST', '/api/checkin/session', { token: tripTok });
+ok(r.status === 410, 'the earlier trip QR stops working after New QR code', r.status);
+await run('UPDATE trips SET started_at = ? WHERE id = ?', realStart, trip.id);
+r = await call(admin, 'PUT', '/api/admin/settings', { qr_mode: 'day' }, csrf);
+r = await call(jar(), 'POST', '/api/checkin/session', { token: q.token });
+ok(r.status === 410, 'switching to whole-day mode cancels trip QRs', r.status);
 await call(admin, 'PUT', '/api/admin/settings', { qr_mode: ORIGINAL_QR_MODE }, csrf);
 
 const scan = async (j) => call(j, 'POST', '/api/checkin/session', { token: await freshToken() });

@@ -318,8 +318,9 @@ function QrPanel({ trip, kiosk, setKiosk, sound, setSound }) {
   }, [fetchQr]);
 
   useEffect(() => {
-    if (qr?.mode !== 'rotating') return undefined;
-    const t = setInterval(() => setLeft((s) => Math.max(0, s - 1)), 1000);
+    // rotating: count the seconds down; per trip: re-render every 30 s so "time left" stays current
+    if (qr?.mode !== 'rotating' && qr?.mode !== 'trip') return undefined;
+    const t = setInterval(() => setLeft((s) => Math.max(0, s - 1)), qr.mode === 'rotating' ? 1000 : 30_000);
     return () => clearInterval(t);
   }, [qr]);
 
@@ -335,7 +336,10 @@ function QrPanel({ trip, kiosk, setKiosk, sound, setSound }) {
   }, [setKiosk]);
 
   const newQr = async () => {
-    if (!(await confirm({ title: 'Make a new QR code?', message: 'Every earlier QR of this bus (screens, prints, photos) stops working immediately.', okText: 'New QR code' }))) return;
+    const message = qr?.mode === 'trip'
+      ? `The current QR of this trip stops working immediately. The new one is valid for ${qr.tripHours} hours from now.`
+      : 'Every earlier QR of this bus (screens, prints, photos) stops working immediately.';
+    if (!qr?.expired && !(await confirm({ title: 'Make a new QR code?', message, okText: 'New QR code' }))) return;
     try { await api.post(`/api/incharge/trips/${trip.id}/new-qr`); toast('New QR code ready', 'success'); fetchQr(); } catch (e) { toast(e.message, 'error'); }
   };
 
@@ -349,19 +353,31 @@ function QrPanel({ trip, kiosk, setKiosk, sound, setSound }) {
       <p className="text-sm text-muted">Open the phone camera, scan, enter your UUID or enrollment number.</p>
       <div className={`relative mt-4 aspect-square w-full rounded-3xl border border-line bg-white p-4 shadow-[var(--shadow-lift)] animate-pop ${kiosk ? 'max-w-[min(78vh,640px)]' : 'max-w-[340px]'}`}>
         {qr ? <div className="size-full [&>svg]:size-full" dangerouslySetInnerHTML={{ __html: qr.svg }} /> : <div className="flex size-full items-center justify-center"><Spinner className="size-8 text-brand" /></div>}
-        {err && <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-white/90 p-4 text-sm font-semibold text-uured">{err}</div>}
+        {err && <div className="absolute inset-0 flex items-center justify-center rounded-3xl bg-white/90 p-4 text-sm font-semibold text-uured">{err}</div>}
+        {qr?.expired && !err && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-3xl bg-white/95 p-6 text-center animate-fade">
+            <span className="flex size-12 items-center justify-center rounded-2xl bg-warn-soft text-warn"><Icon name="clock" className="size-6" /></span>
+            <div className="font-bold text-navy">QR expired</div>
+            <p className="text-sm text-muted">This trip's QR was valid for {qr.tripHours} hours. Make a new one, or end the trip.</p>
+            <button className="btn btn-primary" onClick={newQr}><Icon name="refresh" className="size-4" />New QR code</button>
+          </div>
+        )}
       </div>
       {qr?.mode === 'rotating' ? (
         <div className="mt-3 w-full max-w-[340px]">
           <div className="h-1.5 overflow-hidden rounded-full bg-line"><div className="h-full rounded-full bg-[linear-gradient(90deg,var(--color-brand-light),var(--color-brand))] transition-[width] duration-1000 ease-linear" style={{ width: `${(left / qr.rotateSec) * 100}%` }} /></div>
           <p className="mt-1 text-xs text-muted">New code in {left}s</p>
         </div>
+      ) : qr?.mode === 'trip' ? (
+        <p className={`mt-3 text-xs ${qr.expired ? 'font-semibold text-warn' : 'text-muted'}`}>
+          {qr.expired ? 'Expired. Students cannot scan this QR any more.' : <>Valid for this trip until <b className="text-ink">{fmtTime(qr.validUntil)}</b> ({tripLeft(qr.validUntil)} left).</>}
+        </p>
       ) : qr ? <p className="mt-3 text-xs text-muted">Valid all day (until midnight). The same code works for every trip today.</p> : null}
       <div className="mt-4 flex flex-wrap justify-center gap-2">
         <button className="btn btn-sm" onClick={toggleKiosk}><Icon name="maximize" className="size-4" />{kiosk ? 'Exit full screen' : 'Full screen'}</button>
         <button className="btn btn-sm" onClick={() => setSound(!sound)} title="Beep when a student verifies"><Icon name={sound ? 'sound' : 'mute'} className="size-4" />{sound ? 'Sound on' : 'Sound off'}</button>
         {qr?.mode === 'day' && !kiosk && <button className="btn btn-sm" onClick={() => window.print()}><Icon name="file" className="size-4" />Print</button>}
-        {qr?.mode === 'day' && !kiosk && <button className="btn btn-sm btn-ghost" onClick={newQr} title="Old codes stop working immediately"><Icon name="refresh" className="size-4" />New QR code</button>}
+        {(qr?.mode === 'day' || (qr?.mode === 'trip' && !qr.expired)) && !kiosk && <button className="btn btn-sm btn-ghost" onClick={newQr} title="Old codes stop working immediately"><Icon name="refresh" className="size-4" />New QR code</button>}
       </div>
     </section>
   );
@@ -403,6 +419,12 @@ function ManualCheckin({ trip, onClose }) {
       </div>
     </Modal>
   );
+}
+
+/** Time left until `until`, as "1 h 25 min" (re-rendered by the QR panel's minute ticker). */
+function tripLeft(until) {
+  const m = Math.max(0, Math.round((until - Date.now()) / 60000));
+  return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
 }
 
 let audioCtx = null;
