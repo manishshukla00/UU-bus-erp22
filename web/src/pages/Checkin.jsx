@@ -145,8 +145,9 @@ function VerifyForm({ trip, expiresAt, onDone, onExpired }) {
  * No photo on record: the student takes a selfie with the front camera. It is shrunk on the phone to
  * a small JPEG (about 30 KB), sent with the same ID, saved for good, and the card shows it from then on.
  */
-const PHOTO_W = 360;
-const PHOTO_H = 440;
+// 330 x 400 stays sharp on the card even on 3x phone screens, at about 20 KB
+const PHOTO_W = 330;
+const PHOTO_H = 400;
 async function selfieDataUrl(file) {
   const img = await createImageBitmap(file);
   const scale = Math.max(PHOTO_W / img.width, PHOTO_H / img.height);
@@ -155,9 +156,12 @@ async function selfieDataUrl(file) {
   const canvas = document.createElement('canvas');
   canvas.width = PHOTO_W;
   canvas.height = PHOTO_H;
-  canvas.getContext('2d').drawImage(img, (PHOTO_W - w) / 2, (PHOTO_H - h) / 2, w, h);
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, (PHOTO_W - w) / 2, (PHOTO_H - h) / 2, w, h);
   img.close?.();
-  return canvas.toDataURL('image/jpeg', 0.82);
+  return canvas.toDataURL('image/jpeg', 0.8);
 }
 
 function Selfie({ trip, student, id, onDone, onExpired }) {
@@ -174,7 +178,8 @@ function Selfie({ trip, student, id, onDone, onExpired }) {
     setError(null);
     try {
       const r = await api.post('/api/checkin/verify', { id, photo });
-      onDone({ trip: r.trip, student: r.student, boardedAt: r.boardedAt, already: r.already, needsPhoto: r.needsPhoto, id });
+      // the card shows the selfie straight from the phone: no second download
+      onDone({ trip: r.trip, student: r.student, boardedAt: r.boardedAt, already: r.already, needsPhoto: r.needsPhoto, id, localPhoto: photo });
     } catch (e) {
       if (e.code === 'SESSION_EXPIRED' || e.code === 'TRIP_ENDED') onExpired();
       setError(e.message);
@@ -210,13 +215,13 @@ function Selfie({ trip, student, id, onDone, onExpired }) {
   );
 }
 
-function Done({ trip, student, boardedAt, already }) {
+function Done({ trip, student, boardedAt, already, localPhoto }) {
   return (
     <div className="flex flex-col gap-4">
       <div className={`rounded-xl px-3.5 py-3 text-sm font-semibold animate-slide ${already ? 'bg-warn-soft text-warn' : 'bg-ok-soft text-ok'}`} role="status">
         {already ? 'Already verified on this trip. Show this screen to the incharge if asked.' : 'Student verified successfully.'}
       </div>
-      <StudentCard student={student} busNumber={trip?.bus_number} verifiedAt={boardedAt} already={already} direction={trip?.direction} />
+      <StudentCard student={student} busNumber={trip?.bus_number} verifiedAt={boardedAt} already={already} direction={trip?.direction} photoSrc={localPhoto} />
     </div>
   );
 }
