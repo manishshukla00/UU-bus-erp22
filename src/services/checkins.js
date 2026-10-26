@@ -1,22 +1,34 @@
 import { get, run, batch, now } from '../db.js';
 import { config } from '../config.js';
 import { HttpError } from '../http.js';
-import { nameMatches, normUuid } from '../security.js';
+import { normUuid } from '../security.js';
 import { broadcast, tripScope } from './events.js';
 import { tripCounts } from './trips.js';
 
 const STUDENT_SQL = `SELECT s.*, st.name AS stop_name, b.number AS bus_number, b.name AS bus_name
   FROM students s LEFT JOIN stops st ON st.id = s.stop_id LEFT JOIN buses b ON b.id = s.bus_id`;
 
-export const studentByUuid = (uuid) => get(`${STUDENT_SQL} WHERE s.uuid = ? AND s.active = 1`, normUuid(uuid));
 export const studentById = (id) => get(`${STUDENT_SQL} WHERE s.id = ?`, id);
+
+/**
+ * Active student by UUID or enrollment number (what a student types after scanning, or staff type
+ * for a manual check-in). A UUID match wins over an enrollment-number match.
+ */
+export async function studentByIdentifier(identifier) {
+  const id = normUuid(identifier);
+  if (!id) return null;
+  return (await get(`${STUDENT_SQL} WHERE s.uuid = ? AND s.active = 1`, id))
+    || get(`${STUDENT_SQL} WHERE s.enrollment_no = ? COLLATE NOCASE AND s.active = 1 ORDER BY s.id LIMIT 1`, id);
+}
 
 /** What a student is allowed to see about themselves on the check-in screen. */
 export function publicStudent(s, trip) {
   return {
     id: s.id,
     uuid: s.uuid,
+    enrollment_no: s.enrollment_no || '',
     name: s.name,
+    photo_url: s.photo_url || '',
     course: s.course,
     year: s.year,
     specialization: s.specialization,
@@ -26,11 +38,11 @@ export function publicStudent(s, trip) {
   };
 }
 
-/** Find a student by UUID + name. Returns null on any mismatch (no hint which part was wrong). */
-export async function lookupStudent(uuid, name) {
-  const s = await studentByUuid(uuid);
-  if (!s || !nameMatches(name, s.name)) return null;
-  return s;
+/** A repeat scan of someone already verified on this trip: kept for the daily duplicates count. */
+export async function recordDuplicate({ trip, student, deviceId }) {
+  const ts = now();
+  await run('INSERT INTO duplicates(trip_id, student_id, device_id, created_at) VALUES(?,?,?,?)', trip.id, student.id, deviceId ?? null, ts);
+  await broadcast('duplicate', { trip_id: trip.id, bus_id: trip.bus_id, uuid: student.uuid, name: student.name, created_at: ts, counts: await tripCounts(trip.id, trip.bus_id) }, tripScope(trip));
 }
 
 /**
@@ -143,7 +155,7 @@ function rethrowUnique(e) {
 export function loadCheckin(id) {
   return get(
     `SELECT c.id, c.trip_id, c.created_at, c.method, c.flags, c.note,
-            s.id AS student_id, s.uuid, s.name, s.course, s.year, s.specialization, st.name AS stop,
+            s.id AS student_id, s.uuid, s.enrollment_no, s.name, s.photo_url, s.course, s.year, s.specialization, st.name AS stop,
             t.bus_id, t.incharge_id, t.direction, b.number AS bus_number, m.name AS marked_by_name
        FROM checkins c
        JOIN students s ON s.id = c.student_id
@@ -162,8 +174,9 @@ export async function emitCheckin(id) {
   const trip = { id: c.trip_id, bus_id: c.bus_id, incharge_id: c.incharge_id, direction: c.direction, bus_number: c.bus_number };
   const checkin = {
     id: c.id, trip_id: c.trip_id, created_at: c.created_at, method: c.method, flags: c.flags, note: c.note,
-    student_id: c.student_id, uuid: c.uuid, name: c.name, course: c.course, year: c.year,
-    specialization: c.specialization, stop: c.stop, marked_by_name: c.marked_by_name,
+    student_id: c.student_id, uuid: c.uuid, enrollment_no: c.enrollment_no, name: c.name, photo_url: c.photo_url,
+    course: c.course, year: c.year, specialization: c.specialization, stop: c.stop, marked_by_name: c.marked_by_name,
+    bus_number: c.bus_number, direction: c.direction,
   };
   await broadcast('checkin', { checkin, trip, counts: await tripCounts(c.trip_id, c.bus_id) }, tripScope(trip));
 }

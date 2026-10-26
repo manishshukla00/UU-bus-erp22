@@ -31,7 +31,8 @@ app.use(
         'default-src': ["'self'"],
         'script-src': ["'self'"],
         'style-src': ["'self'"],
-        'img-src': ["'self'", 'data:'],
+        // student photos are linked from wherever the college hosts them (https only)
+        'img-src': ["'self'", 'data:', 'https:'],
         'font-src': ["'self'"],
         'connect-src': ["'self'"],
         'manifest-src': ["'self'"],
@@ -52,19 +53,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// static assets first: no session lookup or body parsing for css/js/icons (on Vercel the CDN serves them)
-const PUBLIC = path.join(config.root, 'public');
-// Serverless packagers place bundled files differently; find the HTML views wherever they landed.
-const VIEWS = [config.root, process.cwd(), process.env.LAMBDA_TASK_ROOT]
-  .filter(Boolean)
-  .map((base) => path.join(base, 'views'))
-  .find((dir) => fs.existsSync(path.join(dir, 'login.html'))) || path.join(config.root, 'views');
-app.use(express.static(PUBLIC, { index: false, maxAge: config.isProd ? '1d' : 0, etag: true }));
+// The React app (built by `npm run build` into dist/). Static files first: no session lookup or body
+// parsing for them. Hashed bundles never change, so browsers keep them for a year.
+// On Netlify and Vercel the CDN serves dist/ and only /api reaches this app.
+const DIST = path.join(config.root, 'dist');
+const INDEX = path.join(DIST, 'index.html');
+app.use('/assets', express.static(path.join(DIST, 'assets'), { index: false, immutable: true, maxAge: '365d', fallthrough: false }));
+app.use(express.static(DIST, { index: false, maxAge: config.isProd ? '1h' : 0, etag: true }));
 
 // ------------------------------------------------------------------ setup gate
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 function setupPage(res, title, items) {
-  res.status(503).set('Cache-Control', 'no-store').type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Setup needed · UU Bus ERP</title><link rel="stylesheet" href="/css/app.css"></head><body><main class="auth"><div class="card pad-lg stack"><div class="status-icon warn">🛠️</div><h1 class="center">${escapeHtml(title)}</h1><ul class="small">${items.map((i) => `<li>${escapeHtml(i)}</li>`).join('')}</ul><p class="xs muted">See the "Deploy on Vercel" section of the README. Redeploy after changing environment variables.</p></div></main></body></html>`);
+  res.status(503).set('Cache-Control', 'no-store').type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Setup needed · UU Bus ERP</title></head><body><main><div><h1>${escapeHtml(title)}</h1><ul>${items.map((i) => `<li>${escapeHtml(i)}</li>`).join('')}</ul><p>See the "Deploy" sections of the README. Redeploy after changing environment variables.</p></div></main></body></html>`);
 }
 
 let lastCleanup = 0;
@@ -89,6 +89,9 @@ app.use(async (req, res, next) => {
   next();
 });
 
+// bulk imports (an Excel workbook or CSV of thousands of students) may be large; everything else is small
+const importLimit = config.serverless ? '4mb' : '10mb';
+app.use(['/api/admin/import', '/api/admin/students/import'], express.json({ limit: importLimit }));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.text({ type: ['text/csv', 'text/plain'], limit: config.serverless ? '4mb' : '10mb' }));
 app.use(loadSession);
@@ -115,37 +118,21 @@ app.get('/api/events/poll', requireAuth('admin', 'operator', 'incharge'), async 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 // ------------------------------------------------------------------ pages
-const page = (file) => (req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.sendFile(path.join(VIEWS, file));
-};
-const requirePage = (...roles) => (req, res, next) => {
-  if (!req.user) return res.redirect(`/login?next=${encodeURIComponent(req.path)}`);
-  if (!roles.includes(req.user.role)) return res.redirect('/');
-  next();
-};
-
-app.get('/', (req, res) => {
-  if (!req.user) return res.redirect('/login');
-  res.redirect(req.user.home);
+// Every page is the React app; it signs people in, routes them and enforces nothing the API doesn't.
+const PAGES = /^\/(?:login|admin|incharge|bus\/[^/]+|checkin(?:\/[^/]+)?)?\/?$/;
+app.get(PAGES, (req, res) => {
+  if (!fs.existsSync(INDEX)) {
+    return setupPage(res, 'Build the web app', ['The React app has not been built yet. Run "npm run build" (or "npm run dev" while developing).']);
+  }
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile(INDEX);
 });
-app.get('/login', (req, res, next) => (req.user ? res.redirect('/') : next()), page('login.html'));
-app.get('/admin', requirePage('admin', 'operator'), page('admin.html'));
-// Portal picker (admins, unassigned incharges). An incharge with a bus goes straight to their own portal.
-app.get('/incharge', requirePage('incharge', 'admin', 'operator'), (req, res, next) => {
-  if (req.user.role === 'incharge' && req.user.bus_number) return res.redirect(req.user.home);
-  next();
-}, page('incharge.html'));
-// One portal per bus: /bus/12 is Bus 12's screen. Only its incharge (or an admin) may open it.
-app.get('/bus/:number', requirePage('incharge', 'admin', 'operator'), async (req, res, next) => {
-  const bus = await get('SELECT id, number FROM buses WHERE number = ? AND active = 1', String(req.params.number).slice(0, 20));
-  if (!bus) { res.status(404); return page('404.html')(req, res); }
-  if (req.user.role === 'incharge' && req.user.bus_id != null && req.user.bus_id !== bus.id) return res.redirect(req.user.home);
-  next();
-}, page('incharge.html'));
-app.get('/checkin', page('checkin.html'));
-app.get('/checkin/:bus', page('checkin.html'));
-app.use((req, res) => { res.status(404); page('404.html')(req, res); });
+// anything else: the app's own "page not found" screen
+app.use((req, res) => {
+  res.status(404);
+  if (req.method === 'GET' && req.accepts('html') && fs.existsSync(INDEX)) return res.sendFile(INDEX);
+  res.type('text').send('Not found');
+});
 
 // ------------------------------------------------------------------ errors
 // eslint-disable-next-line no-unused-vars
@@ -155,6 +142,8 @@ app.use((err, req, res, next) => {
   if (err?.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON body' });
   if (err?.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large' });
   if (err?.status === 400) return res.status(400).json({ error: 'Bad request' });
+  // a missing static file (e.g. an old bundle name after a new build)
+  if (err?.status === 404 || err?.statusCode === 404) return res.status(404).type('text').send('Not found');
   console.error(`[${new Date().toISOString()}] Unhandled error on ${req.method} ${req.originalUrl}:`, err);
   res.status(500).json({ error: 'Something went wrong on the server. Please try again.' });
 });

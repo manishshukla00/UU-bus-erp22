@@ -297,6 +297,36 @@ const MIGRATIONS = [
     // another serverless instance may have added the column a moment earlier
     alreadyDone: /duplicate column name/i,
   },
+  // v5, v6: student photo and enrollment number (students verify with their UUID or enrollment number)
+  {
+    version: 5,
+    script: `
+      ALTER TABLE students ADD COLUMN photo_url TEXT NOT NULL DEFAULT '';
+      UPDATE schema_version SET version = 5 WHERE version < 5;
+    `,
+    alreadyDone: /duplicate column name/i,
+  },
+  {
+    version: 6,
+    script: `
+      ALTER TABLE students ADD COLUMN enrollment_no TEXT NOT NULL DEFAULT '';
+      UPDATE schema_version SET version = 6 WHERE version < 6;
+    `,
+    alreadyDone: /duplicate column name/i,
+  },
+  // v7: lookup by enrollment number, and repeat scans ("already verified") kept for the daily report
+  `
+  CREATE INDEX IF NOT EXISTS students_enrollment ON students(enrollment_no COLLATE NOCASE);
+  CREATE TABLE IF NOT EXISTS duplicates (
+    id INTEGER PRIMARY KEY,
+    trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+    student_id INTEGER NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+    device_id TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS duplicates_trip ON duplicates(trip_id);
+  CREATE INDEX IF NOT EXISTS duplicates_created ON duplicates(created_at);
+  `,
 ];
 const splitSql = (sql) => sql.split(/;\s*\n/).map((s) => s.trim().replace(/;$/, '')).filter(Boolean);
 

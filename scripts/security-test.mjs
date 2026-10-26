@@ -75,12 +75,15 @@ r = await call(admin, 'POST', '/api/admin/fleet', {}, csrf);
 ok(r.status === 200 && r.data.fleetSize === 19 && r.data.buses === 0 && r.data.incharges.length === 0, 'fleet button is idempotent: nothing new on a complete fleet', JSON.stringify(r.data));
 r = await call(admin, 'POST', '/api/admin/fleet', {});
 ok(r.status === 403 && r.data.code === 'CSRF', 'fleet button needs the CSRF token', r.status);
-const h12 = await fetch(`${BASE}/bus/12`, { headers: admin.headers(), redirect: 'manual' });
-ok(h12.status === 200, 'admin can open /bus/12 portal page');
-const h404 = await fetch(`${BASE}/bus/does-not-exist`, { headers: admin.headers(), redirect: 'manual' });
-ok(h404.status === 404, 'unknown bus portal -> 404');
-const anon = await fetch(`${BASE}/bus/12`, { redirect: 'manual' });
-ok(anon.status === 302 && /\/login/.test(anon.headers.get('location') || ''), 'portal page without login redirects to /login');
+// pages are the React app; the access rules live in the API
+r = await call(admin, 'GET', '/api/incharge/state?bus=12');
+ok(r.status === 200 && r.data.scopedBus?.number === '12', 'admin can open the bus 12 portal');
+r = await call(admin, 'GET', '/api/incharge/state?bus=does-not-exist');
+ok(r.status === 404, 'unknown bus portal -> 404', r.status);
+r = await call(jar(), 'GET', '/api/incharge/state?bus=12');
+ok(r.status === 401, 'portal without login -> 401', r.status);
+const page = await fetch(`${BASE}/bus/12`);
+ok(page.status === 200 && (await page.text()).includes('id="root"'), 'portal page is served by the web app');
 
 // ---------------------------------------------------------------- auth & csrf
 console.log('\n[auth & csrf]');
@@ -137,8 +140,9 @@ r = await call(inch, 'GET', `/api/incharge/state?bus=${encodeURIComponent(otherB
 ok(r.status === 403 && r.data.code === 'WRONG_BUS_PORTAL', 'incharge cannot open another bus portal -> 403', r.status);
 r = await call(inch, 'GET', '/api/incharge/buses');
 ok(r.status === 200 && r.data.buses.length === 1 && r.data.buses[0].number === '12', 'portal picker shows the incharge only its bus');
-const bounce = await fetch(`${BASE}/bus/${encodeURIComponent(otherBus.number)}`, { headers: inch.headers(), redirect: 'manual' });
-ok(bounce.status === 302 && bounce.headers.get('location') === '/bus/12', 'another bus portal page bounces the incharge to /bus/12');
+// the web app sends an incharge who opens another bus back to their home portal
+r = await call(inch, 'GET', '/api/auth/me');
+ok(r.status === 200 && r.data.user.home === '/bus/12', "the incharge's home is the bus 12 portal", JSON.stringify(r.data?.user));
 r = await call(inch, 'POST', '/api/admin/fleet', {}, icsrf);
 ok(r.status === 403, 'incharge cannot create the fleet -> 403', r.status);
 r = await call(inch, 'GET', '/api/admin/dashboard');
@@ -202,11 +206,9 @@ ok(r.status === 410, 'switching back to rotating cancels day QRs', r.status);
 await call(admin, 'PUT', '/api/admin/settings', { qr_mode: ORIGINAL_QR_MODE }, csrf);
 
 const scan = async (j) => call(j, 'POST', '/api/checkin/session', { token: await freshToken() });
-const board = async (j, [uuid, name]) => {
+const board = async (j, [uuid]) => {
   await scan(j);
-  const l = await call(j, 'POST', '/api/checkin/lookup', { uuid, name });
-  if (l.status !== 200) return l;
-  return call(j, 'POST', '/api/checkin/confirm');
+  return call(j, 'POST', '/api/checkin/verify', { id: uuid });
 };
 
 // ---------------------------------------------------------------- identity
@@ -214,14 +216,10 @@ console.log('\n[identity]');
 const d1 = jar();
 r = await scan(d1);
 ok(r.status === 200 && r.data.trip.bus_number === '12', 'live token -> session');
-r = await call(d1, 'POST', '/api/checkin/lookup', { uuid: S.aditi[0], name: 'Someone Else' });
-ok(r.status === 404 && r.data.code === 'NO_MATCH', 'right ID + wrong name -> no match', r.status);
-r = await call(d1, 'POST', '/api/checkin/lookup', { uuid: S.aditi[0], name: S.aditi[1].split(' ')[0] });
-ok(r.status === 404, 'first name only -> no match');
-r = await call(d1, 'POST', '/api/checkin/confirm');
-ok(r.status === 400 && r.data.code === 'NO_STUDENT', 'confirm before lookup -> 400');
-r = await call(d1, 'POST', '/api/checkin/lookup', { uuid: ` ${S.aditi[0].toLowerCase()} `, name: `  ${S.aditi[1].toUpperCase().replace(' ', '   ')} ` });
-ok(r.status === 200 && r.data.student.uuid === S.aditi[0] && r.data.student.name === S.aditi[1] && r.data.student.stop, 'messy case/spacing matches; details come from DB');
+r = await call(d1, 'POST', '/api/checkin/verify', { id: 'NOT-A-STUDENT-1' });
+ok(r.status === 404 && r.data.code === 'NO_MATCH', 'unknown ID -> student not found', r.status);
+r = await call(d1, 'POST', '/api/checkin/verify', {});
+ok(r.status === 400, 'missing ID -> 400', r.status);
 
 // ---------------------------------------------------------------- anti-proxy (+ live events)
 console.log('\n[anti-proxy & live events]');
@@ -236,8 +234,9 @@ ok(r.status === 200 && Number.isInteger(r.data.cursor), 'poll: first request (af
 r = await call(admin, 'GET', '/api/events/poll?after=abc');
 ok(r.status === 400, 'poll: garbage cursor rejected', r.status);
 const [cA, cI, cX] = [await cursorOf(admin), await cursorOf(inch), await cursorOf(inchX)];
-r = await call(d1, 'POST', '/api/checkin/confirm');
-ok(r.status === 200 && r.data.ok && r.data.flags.length === 0, 'phone D1 boards Aditi');
+r = await call(d1, 'POST', '/api/checkin/verify', { id: ` ${S.aditi[0].toLowerCase()} ` });
+ok(r.status === 200 && r.data.ok && !r.data.already && r.data.flags.length === 0, 'phone D1 verifies Aditi (messy case/spacing)', JSON.stringify(r.data));
+ok(r.data.student?.uuid === S.aditi[0] && r.data.student.name === S.aditi[1] && r.data.student.stop && r.data.trip.bus_number === '12', 'card details come from the database');
 if (LIVE === 'poll') {
   const seen = async (j, c) => (await call(j, 'GET', `/api/events/poll?after=${c}`)).data.events.filter((e) => e.type === 'checkin').map((e) => e.data.checkin.uuid);
   ok((await seen(admin, cA)).includes(S.aditi[0]), 'poll: admin receives the boarding event');
@@ -250,25 +249,28 @@ if (LIVE === 'poll') {
   ok(r.status === 200 && typeof r.data.cursor === 'number', 'poll endpoint answers in SSE mode too');
 }
 await call(admin, 'DELETE', `/api/admin/users/${otherInchargeId}`, undefined, csrf);
-r = await call(d1, 'POST', '/api/checkin/confirm');
-ok(r.status === 409 && r.data.code === 'ALREADY', 'pressing Done twice -> already boarded');
+r = await call(d1, 'POST', '/api/checkin/verify', { id: S.aditi[0] });
+ok(r.status === 200 && r.data.already && r.data.student.uuid === S.aditi[0], 'pressing Verify twice -> already verified card');
 r = await board(d1, S.rahul);
 ok(r.status === 403 && r.data.code === 'DEVICE_USED', 'phone D1 tries a second student on same trip -> blocked', r.status);
 const d2 = jar();
+const dups0 = (await call(admin, 'GET', `/api/incharge/trips/${trip.id}`)).data.counts.duplicates;
 r = await board(d2, S.aditi);
-ok(r.status === 409 && r.data.code === 'ALREADY', 'phone D2 tries Aditi again -> already boarded');
+ok(r.status === 200 && r.data.already, 'phone D2 tries Aditi again -> already verified', JSON.stringify(r.data));
+r = await call(admin, 'GET', `/api/incharge/trips/${trip.id}`);
+ok(r.data.counts.duplicates === dups0 + 1, 'the repeat scan is counted as a duplicate', JSON.stringify(r.data.counts));
 r = await board(d2, S.priya);
 ok(r.status === 200 && r.data.flags.length === 0, 'phone D2 boards Priya, no flags');
 r = await board(jar(), S.tanvi);
-ok(r.status === 404 && r.data.code === 'NO_MATCH' && /Invalid/.test(r.data.error), 'student of another bus scanning bus 12 -> invalid', JSON.stringify(r.data));
+ok(r.status === 404 && r.data.code === 'NO_MATCH' && /not found for Bus 12/.test(r.data.error), 'student of another bus scanning bus 12 -> not found for this bus', JSON.stringify(r.data));
 r = await call(admin, 'POST', `/api/incharge/trips/${trip.id}/manual`, { uuid: S.tanvi[0] }, csrf);
 ok(r.status === 409 && r.data.code === 'NOT_ON_BUS', 'manual check-in of another bus student -> refused', r.status);
 r = await call(inch, 'GET', `/api/incharge/students/search?q=${encodeURIComponent(S.tanvi[1].split(' ')[0])}&bus=${otherBus.id}`);
 ok(r.status === 200 && r.data.items.every((s) => s.bus_number === '12'), 'bus admin search only ever returns students of their own bus');
 r = await call(admin, 'POST', `/api/incharge/trips/${trip.id}/end`, {}, csrf);
 ok(r.status === 200, 'end trip 1');
-r = await call(d1, 'POST', '/api/checkin/lookup', S.aditi.length ? { uuid: S.aditi[0], name: S.aditi[1] } : {});
-ok(r.status === 410, 'pending check-in session dies when trip ends');
+r = await call(d1, 'POST', '/api/checkin/verify', { id: S.aditi[0] });
+ok(r.status === 410, 'check-in session dies when trip ends', r.status);
 r = await call(admin, 'POST', '/api/incharge/trips', { bus_id: bus12.id, direction: 'to_college' }, csrf);
 trip = r.data.trip;
 ok(r.status === 201, 'start trip 2');
@@ -293,7 +295,7 @@ console.log('\n[brute force limits]');
 const d6 = jar();
 await scan(d6);
 let last;
-for (let i = 0; i < 7; i++) last = await call(d6, 'POST', '/api/checkin/lookup', { uuid: `UU2023CS0${100 + i}`, name: 'Guess Guess' });
+for (let i = 0; i < 7; i++) last = await call(d6, 'POST', '/api/checkin/verify', { id: `GUESS${100 + i}` });
 ok(last.status === 429 && last.data.code === 'LOOKUPS_EXHAUSTED', 'ID guessing stops after 6 tries per scan', last.status);
 r = await call(admin, 'POST', '/api/admin/users', { username: 'locktest', name: 'Lock Test', role: 'incharge', password: 'LockTest12345' }, csrf);
 const lockId = r.data.id;
@@ -311,7 +313,36 @@ r = await call(admin, 'GET', `/api/admin/trips/${trip.id}`);
 ok(r.status === 200 && r.data.counts.boarded === 2 && r.data.checkins.some((c) => c.method === 'manual'), 'trip summary counts 2 boarded (Priya + manual)', JSON.stringify(r.data.counts));
 const res = await fetch(`${BASE}/api/admin/trips/${trip.id}/export.csv`, { headers: admin.headers() });
 const csv = await res.text();
-ok(res.status === 200 && csv.startsWith('uuid,name') && csv.includes(S.priya[0]) && csv.includes('phone dead'), 'CSV export');
+ok(res.status === 200 && csv.startsWith('uuid,name') && csv.includes(S.priya[0]) && csv.includes('phone dead'), 'trip CSV export');
+
+// day report, enrollment numbers and the Excel workbook layout
+r = await call(admin, 'GET', '/api/admin/today');
+const b12today = r.data?.buses?.find((b) => b.number === '12');
+ok(r.status === 200 && b12today && b12today.verified >= 2 && b12today.duplicates >= 1 && r.data.verified.some((c) => c.uuid === S.priya[0]) && r.data.duplicates.length >= 1, "day report: bus 12 verified count, duplicates and today's list", JSON.stringify(b12today));
+const rep1 = await fetch(`${BASE}/api/admin/today/export.csv`, { headers: admin.headers() });
+const repCsv = await rep1.text();
+ok(rep1.status === 200 && repCsv.startsWith('time,uuid,enrollment_no,name') && repCsv.includes('DUPLICATE'), 'day report CSV');
+r = await call(admin, 'POST', '/api/admin/students/import', { rows: [['UUID', 'Name', 'PhotoURL', 'Route', 'BusNo', 'Course', 'EnrollmentNo', 'Active'], ['TEST002', 'Excel Test', 'https://example.com/p.jpg', '01 Test Crossing', '12', 'BCA', 'ENR-TEST-002', 'TRUE'], ['TEST003', 'Inactive Test', '', '', '12', '', '', 'FALSE']] }, csrf);
+ok(r.status === 200 && r.data.inserted + r.data.updated === 2 && r.data.inactive === 1, 'Excel-layout import (Route = pickup point, Active column)', JSON.stringify(r.data));
+const xl = (await call(admin, 'GET', '/api/admin/students?q=TEST002')).data.items[0];
+ok(xl && xl.enrollment_no === 'ENR-TEST-002' && xl.photo_url === 'https://example.com/p.jpg' && xl.stop_name === '01 Test Crossing' && xl.bus_number === '12', 'imported photo, enrollment number and route', JSON.stringify(xl));
+if (xl) await call(admin, 'POST', `/api/admin/students/${xl.id}/devices/reset`, {}, csrf); // repeatable runs
+r = await board(jar(), ['enr-test-002']);
+ok(r.status === 200 && r.data.student?.uuid === 'TEST002' && r.data.student.photo_url, 'student verifies with their enrollment number', JSON.stringify(r.data));
+r = await board(jar(), ['TEST003']);
+ok(r.status === 404, 'inactive student cannot verify', r.status);
+for (const q of ['TEST002', 'TEST003']) { const x = (await call(admin, 'GET', `/api/admin/students?q=${q}`)).data.items[0]; if (x) await call(admin, 'DELETE', `/api/admin/students/${x.id}`, undefined, csrf); }
+r = await call(admin, 'POST', '/api/admin/import/workbook', { buses: [{ number: 'WB-1', route: 'Workbook route', active: 'TRUE' }], incharges: [{ id: 'IC-WB1', name: 'Workbook Incharge', bus: 'WB-1', active: 'TRUE', role: 'INCHARGE' }, { id: 'UU-ADMIN', name: 'Admin row', bus: 'ALL', role: 'ADMIN' }], students: [] }, csrf);
+ok(r.status === 200 && r.data.buses.created + r.data.buses.updated === 1 && (r.data.incharges.created.length === 1 ? r.data.incharges.created[0].password.length >= 10 : r.data.incharges.updated === 1), 'workbook import: bus and incharge account (password shown once), ADMIN row ignored', JSON.stringify(r.data));
+const staffNow = (await call(admin, 'GET', '/api/admin/users')).data.items;
+const wbUser = staffNow.find((u) => u.username === 'IC-WB1');
+ok(wbUser && wbUser.role === 'incharge' && wbUser.bus_number === 'WB-1' && !staffNow.some((u) => u.username === 'UU-ADMIN'), 'incharge linked to its bus; no admin account created from the sheet');
+if (wbUser) await call(admin, 'DELETE', `/api/admin/users/${wbUser.id}`, undefined, csrf);
+const wbBus = (await call(admin, 'GET', '/api/admin/buses')).data.buses.find((b) => b.number === 'WB-1');
+if (wbBus) await call(admin, 'DELETE', `/api/admin/buses/${wbBus.id}`, undefined, csrf);
+r = await call(admin, 'POST', '/api/admin/import/workbook', { buses: [] });
+ok(r.status === 403 && r.data.code === 'CSRF', 'workbook import needs the CSRF token', r.status);
+
 r = await call(admin, 'POST', '/api/admin/students/import', { csv: 'uuid,name,course,year,bus,stop\nTEST001,Import Test,BCA,1st,99,New Stop' }, csrf);
 ok(r.status === 200 && r.data.inserted + r.data.updated === 1, 'CSV import', JSON.stringify(r.data));
 const imported = (await call(admin, 'GET', '/api/admin/students?q=TEST001')).data.items[0];
@@ -351,8 +382,8 @@ for (const [m, p, body] of writes) {
 }
 r = await call(op, 'GET', '/api/events/poll?after=0');
 ok(r.status === 200 && Number.isInteger(r.data.cursor), 'operations admin receives live updates');
-const opPage = await fetch(`${BASE}/bus/${encodeURIComponent(otherBus.number)}`, { headers: op.headers(), redirect: 'manual' });
-ok(opPage.status === 200, 'operations admin can open any bus portal page to watch it', opPage.status);
+r = await call(op, 'GET', `/api/incharge/state?bus=${encodeURIComponent(otherBus.number)}`);
+ok(r.status === 200, 'operations admin can open any bus portal to watch it', r.status);
 await call(admin, 'DELETE', `/api/admin/users/${testOperatorId}`, undefined, csrf);
 
 console.log('\n[demo students]');
@@ -373,6 +404,7 @@ await call(admin, 'DELETE', `/api/admin/users/${testInchargeId}`, undefined, csr
 
 console.log('\n[headers]');
 const h = await fetch(`${BASE}/login`);
+ok(/img-src [^;]*https:/.test(h.headers.get('content-security-policy') || ''), 'student photos allowed from https links only');
 ok(h.headers.get('content-security-policy')?.includes("script-src 'self'"), 'strict CSP present');
 ok(h.headers.get('content-security-policy')?.includes("frame-ancestors 'none'"), 'clickjacking protection');
 ok(!h.headers.get('x-powered-by'), 'no x-powered-by');

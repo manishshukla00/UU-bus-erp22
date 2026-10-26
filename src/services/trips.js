@@ -14,12 +14,14 @@ export const getTrip = (id) => get(`SELECT ${TRIP_COLS} ${TRIP_FROM} WHERE t.id 
 export const getTripRaw = (id) => get('SELECT * FROM trips WHERE id = ?', id);
 
 export async function tripCounts(tripId, busId) {
-  const [boarded, flagged, expected] = await Promise.all([
-    get('SELECT COUNT(*) AS c FROM checkins WHERE trip_id = ?', tripId),
-    get("SELECT COUNT(*) AS c FROM checkins WHERE trip_id = ? AND flags <> ''", tripId),
-    get('SELECT COUNT(*) AS c FROM students WHERE bus_id = ? AND active = 1', busId),
-  ]);
-  return { boarded: boarded.c, flagged: flagged.c, expected: expected.c };
+  const r = await get(
+    `SELECT (SELECT COUNT(*) FROM checkins WHERE trip_id = ?) AS boarded,
+            (SELECT COUNT(*) FROM checkins WHERE trip_id = ? AND flags <> '') AS flagged,
+            (SELECT COUNT(*) FROM students WHERE bus_id = ? AND active = 1) AS expected,
+            (SELECT COUNT(*) FROM duplicates WHERE trip_id = ?) AS duplicates`,
+    tripId, tripId, busId, tripId,
+  );
+  return { boarded: r.boarded, flagged: r.flagged, expected: r.expected, duplicates: r.duplicates };
 }
 
 export const withCounts = async (trip) => ({ ...trip, counts: await tripCounts(trip.id, trip.bus_id) });
@@ -32,7 +34,7 @@ export async function tripSummary(id, { lists = true } = {}) {
     tripCounts(trip.id, trip.bus_id),
     all(
       `SELECT c.id, c.created_at, c.method, c.flags, c.note, c.ip,
-              s.id AS student_id, s.uuid, s.name, s.course, s.year, s.specialization, s.bus_id AS student_bus_id,
+              s.id AS student_id, s.uuid, s.enrollment_no, s.name, s.photo_url, s.course, s.year, s.specialization, s.bus_id AS student_bus_id,
               st.name AS stop, m.name AS marked_by_name
          FROM checkins c
          JOIN students s ON s.id = c.student_id
@@ -43,7 +45,7 @@ export async function tripSummary(id, { lists = true } = {}) {
       id,
     ),
     all(
-      `SELECT s.id, s.uuid, s.name, s.course, s.year, st.name AS stop
+      `SELECT s.id, s.uuid, s.enrollment_no, s.name, s.photo_url, s.course, s.year, st.name AS stop
          FROM students s LEFT JOIN stops st ON st.id = s.stop_id
         WHERE s.bus_id = ? AND s.active = 1
           AND s.id NOT IN (SELECT student_id FROM checkins WHERE trip_id = ?)

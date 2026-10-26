@@ -14,7 +14,7 @@ export const DEMO_PREFIX = 'DEMO-';
 /** Adds `perBus` demo students to every active bus (spread over its stops). Safe to repeat. */
 export async function addDemoStudents(perBus = 6) {
   const [buses, stops] = await Promise.all([
-    all('SELECT id, number FROM buses WHERE active = 1 ORDER BY CAST(number AS INTEGER), number'),
+    all('SELECT id, number FROM buses WHERE active = 1 ORDER BY LENGTH(number), number'),
     all('SELECT id, bus_id FROM stops ORDER BY bus_id, seq, id'),
   ]);
   if (!buses.length) return { inserted: 0, buses: 0, perBus };

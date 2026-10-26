@@ -7,7 +7,7 @@ import { randomId, sha256 } from '../security.js';
 import { deviceIdentity } from '../middleware/device.js';
 import { scanLimiter, lookupLimiter } from '../middleware/rateLimit.js';
 import { verifyToken } from '../services/qr.js';
-import { lookupStudent, studentById, publicStudent, confirmCheckin } from '../services/checkins.js';
+import { studentByIdentifier, studentById, publicStudent, confirmCheckin, recordDuplicate } from '../services/checkins.js';
 import { getTrip } from '../services/trips.js';
 
 const router = Router();
@@ -16,7 +16,7 @@ const MAX_LOOKUPS = 6;
 
 router.use(deviceIdentity);
 
-const publicTrip = (t) => ({ id: t.id, bus_number: t.bus_number, bus_name: t.bus_name, bus_route: t.bus_route, direction: t.direction, started_at: t.started_at });
+const publicTrip = (t) => ({ id: t.id, bus_number: t.bus_number, bus_name: t.bus_name, bus_route: t.bus_route, direction: t.direction, started_at: t.started_at, status: t.status });
 
 /** Loads the caller's check-in session (cookie) and verifies it is alive, unconsumed and on this device. */
 async function loadCheckinSession(req, res) {
@@ -74,41 +74,41 @@ router.get('/session', async (req, res) => {
   res.json({ active: true, trip: publicTrip(trip), expiresAt: s.expires_at, device: req.deviceToken, student, boardedAt, consumed: !!s.consumed_at });
 });
 
-/** Step 2: identify yourself. UUID + name must both match the record. */
-router.post('/lookup', lookupLimiter, async (req, res) => {
+/**
+ * Step 2: the student types their UUID or enrollment number and is verified in one step, with every
+ * anti-proxy rule (one phone per student, one check-in per trip, own bus only).
+ * Someone already verified on this trip gets their card back marked "already verified", and the
+ * repeat scan is counted as a duplicate.
+ */
+router.post('/verify', lookupLimiter, async (req, res) => {
   const s = await loadCheckinSession(req, res);
   if (!s) throw new HttpError(410, 'Your check-in window has expired. Scan the QR again.', { code: 'SESSION_EXPIRED' });
-  if (s.consumed_at) throw new HttpError(409, 'This check-in is already complete.', { code: 'ALREADY' });
-  const { uuid, name } = validate(
-    z.object({ uuid: z.string().trim().min(2).max(40), name: z.string().trim().min(2).max(80) }),
-    req.body,
-  );
+  const trip = await getTrip(s.trip_id);
+  if (!trip || trip.status !== 'active') throw new HttpError(410, 'This trip has ended. Ask the bus incharge.', { code: 'TRIP_ENDED' });
+  if (s.consumed_at && s.student_id) {
+    const student = await studentById(s.student_id);
+    const at = (await get('SELECT created_at FROM checkins WHERE trip_id = ? AND student_id = ?', trip.id, s.student_id))?.created_at ?? s.consumed_at;
+    return res.json({ ok: true, already: true, boardedAt: at, student: publicStudent(student, trip), trip: publicTrip(trip) });
+  }
+  const { id } = validate(z.object({ id: z.string().trim().min(2).max(40) }), req.body);
   // count the attempt atomically first, so parallel guesses cannot slip past the limit
   const used = await run('UPDATE checkin_sessions SET lookups = lookups + 1 WHERE id = ? AND lookups < ?', s.id, MAX_LOOKUPS);
-  if (!used.changes) throw new HttpError(429, 'Too many wrong attempts. Scan the QR again and check your details with the incharge.', { code: 'LOOKUPS_EXHAUSTED' });
-  const trip = await getTrip(s.trip_id);
-  const found = await lookupStudent(uuid, name);
+  if (!used.changes) throw new HttpError(429, 'Too many wrong attempts. Scan the QR again and check your ID with the incharge.', { code: 'LOOKUPS_EXHAUSTED' });
+  const found = await studentByIdentifier(id);
   // only students registered on THIS bus can board it; anyone else is simply "invalid"
   const student = found && found.bus_id === trip.bus_id ? found : null;
   if (!student) {
     const left = MAX_LOOKUPS - s.lookups - 1;
-    throw new HttpError(404, `Invalid. No student with this ID and name is registered on Bus ${trip.bus_number}.${left > 0 ? ` ${left} attempt${left === 1 ? '' : 's'} left.` : ''}`, { code: 'NO_MATCH', attemptsLeft: left });
+    throw new HttpError(404, `Student not found for Bus ${trip.bus_number}. Check your UUID or enrollment number.${left > 0 ? ` ${left} attempt${left === 1 ? '' : 's'} left.` : ''}`, { code: 'NO_MATCH', attemptsLeft: left });
   }
   await run('UPDATE checkin_sessions SET student_id = ? WHERE id = ?', student.id, s.id);
   const already = await get('SELECT created_at FROM checkins WHERE trip_id = ? AND student_id = ?', trip.id, student.id);
-  res.json({ student: publicStudent(student, trip), trip: publicTrip(trip), boardedAt: already?.created_at ?? null });
-});
-
-/** Step 3: "Yes, that's me" -> atomic check-in with every anti-proxy rule. */
-router.post('/confirm', lookupLimiter, async (req, res) => {
-  const s = await loadCheckinSession(req, res);
-  if (!s) throw new HttpError(410, 'Your check-in window has expired. Scan the QR again.', { code: 'SESSION_EXPIRED' });
-  if (!s.student_id) throw new HttpError(400, 'Enter your ID and name first.', { code: 'NO_STUDENT' });
-  if (s.consumed_at) throw new HttpError(409, 'This check-in is already complete.', { code: 'ALREADY' });
-  const [trip, student] = await Promise.all([getTrip(s.trip_id), studentById(s.student_id)]);
-  if (!trip || !student || !student.active) throw new HttpError(410, 'Trip or student no longer available', { code: 'GONE' });
+  if (already) {
+    await recordDuplicate({ trip, student, deviceId: req.deviceId });
+    return res.json({ ok: true, already: true, boardedAt: already.created_at, student: publicStudent(student, trip), trip: publicTrip(trip) });
+  }
   const r = await confirmCheckin({ sessionId: s.id, trip, student, deviceId: req.deviceId, ip: clientIp(req), ua: userAgent(req) });
-  res.json({ ok: true, boardedAt: r.at, flags: r.flags, student: publicStudent(student, trip), trip: publicTrip(trip) });
+  res.json({ ok: true, already: false, boardedAt: r.at, flags: r.flags, student: publicStudent(student, trip), trip: publicTrip(trip) });
 });
 
 export default router;

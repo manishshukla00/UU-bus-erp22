@@ -11,7 +11,7 @@ function findRoot() {
     if (url) return path.resolve(path.dirname(fileURLToPath(url)), '..');
   } catch { /* fall through */ }
   const candidates = [process.env.LAMBDA_TASK_ROOT, process.cwd()].filter(Boolean);
-  return candidates.find((dir) => fs.existsSync(path.join(dir, 'views'))) || candidates[0] || '.';
+  return candidates.find((dir) => fs.existsSync(path.join(dir, 'package.json'))) || candidates[0] || '.';
 }
 export const ROOT = findRoot();
 

@@ -1,9 +1,9 @@
 {
-  "name": "United University Bus Boarding",
+  "name": "United University Bus Verification",
   "short_name": "UU Bus",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#0f4c87",
+  "theme_color": "#0b4ea2",
   "icons": [{ "src": "/img/uu-crest.png", "sizes": "88x88", "type": "image/png" }]
 }

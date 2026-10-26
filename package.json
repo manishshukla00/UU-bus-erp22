@@ -1,7 +1,7 @@
 {
   "name": "uu-bus-erp",
   "version": "1.0.0",
-  "description": "Secure, proxy-proof QR boarding system for college buses (rotating QR + device binding + live admin dashboard)",
+  "description": "United University bus verification: QR boarding with ID-only student verification, live admin dashboard (React + Tailwind front end, Node/Express API)",
   "private": true,
   "type": "module",
   "engines": {
@@ -9,7 +9,9 @@
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "build": "vite build",
     "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
+    "dev:web": "vite",
     "seed:buses": "node --disable-warning=ExperimentalWarning scripts/seed-buses.js",
     "seed:demo": "node --disable-warning=ExperimentalWarning scripts/seed-demo.js",
     "reset-admin": "node --disable-warning=ExperimentalWarning scripts/reset-admin.js",
@@ -25,5 +27,14 @@
     "qrcode": "^1.5.4",
     "serverless-http": "^4.0.0",
     "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@vitejs/plugin-react": "6.1.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "read-excel-file": "9.3.12",
+    "tailwindcss": "4.3.3",
+    "vite": "8.3.4"
   }
 }

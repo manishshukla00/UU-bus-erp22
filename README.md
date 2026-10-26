@@ -1,14 +1,21 @@
-# UU Bus ERP
+# UU Bus ERP · United University Bus Verification
 
-A secure, proxy-proof **QR boarding system** for a fleet of **19 college buses**.
+A fast, proxy-resistant **QR boarding and verification system** for United University's buses.
+It brings the Google Apps Script verification system (Students / Buses / Incharges sheets) onto a
+real web stack: a **React 19 + Tailwind CSS** front end and a **Node.js (Express) API** with a
+SQLite / Turso database.
 
-Every bus has **its own portal** (`/bus/1` … `/bus/19`), **its own rotating QR code** and
-**its own incharge login**. The incharge opens the bus portal; it shows a QR that changes every
-20 seconds. Each student scans it with their **own phone**, types their name and student ID,
-sees their record (course, year, specialization, stop) and taps **Done**. The bus portal and
-the admin dashboard update **instantly** with the student's name and the running count.
+* Every bus has **its own portal** (`/bus/UU-10`), **its own QR code** and **its own incharge login**.
+* The incharge starts the **morning** (to college) or **evening** (from college) trip and shows the QR.
+* A student scans it with their **own phone**, types their **UUID or enrollment number** and taps
+  **Verify Student**. The card shows **BUS NO.**, photo, name, course, route, enrollment number and
+  **✓ VERIFIED**, the same card as the Apps Script page.
+* The bus portal and the admin dashboard update **live**: the admin sees **today's verified students
+  with the count**, per bus "verified of N active students", and **duplicate scans** (students who
+  scanned again after being verified).
+* The whole Apps Script **Excel workbook imports in one step** (Admin → Import Excel).
 
-This is deliberately **not** an attendance register: it only records who boarded which trip.
+This is not an attendance register: it records who was verified on which bus trip.
 
 ---
 
@@ -18,55 +25,60 @@ Requirements: **Node.js 22.13 or newer** (uses the built-in SQLite, no native mo
 
 ```bash
 npm install
-npm run seed:buses    # the 19 buses, their stops and 19 incharge accounts (real setup)
-npm run seed:demo     # same, plus ~6 demo students per bus (for trying it out)
+npm run build         # builds the React app into dist/
+npm run seed:demo     # optional: a demo fleet with demo students to try things out
 npm start
 ```
 
 Then open <http://localhost:3000>.
 
 * First run creates the **admin** account and prints its one-time password in the console
-  (also saved to `data/initial-admin.txt`; delete that file after signing in). You are forced
-  to set a new password at first sign-in.
-* The seed creates **19 incharge accounts** `incharge1` … `incharge19`, one per bus, with
-  temporary passwords printed to the console and saved to `data/incharge-accounts.txt`.
-  Hand each incharge their line; they must change the password at first sign-in and then land
-  on their own bus portal. Delete the file once distributed.
-* The console also prints the **Network** address, e.g. `http://192.168.1.10:3000`. That is
-  what the QR codes encode, so student phones must be able to reach it (same Wi-Fi).
-  Change it any time from **Admin → Settings**, or set `BASE_URL` in `.env`.
+  (also saved to `data/initial-admin.txt`; delete that file after signing in). You are asked to
+  set a new password at first sign-in.
+* Import your data: **Admin → Import Excel**, choose the *United University Bus Database* workbook.
+  It creates the buses, one incharge account per bus (Login ID = the sheet's `InchargeID`, e.g.
+  `IC-UU10`, with a generated password shown once) and every student.
+* The console also prints the **Network** address, e.g. `http://192.168.1.10:3000`. That is what
+  the QR codes encode, so student phones must be able to reach it (same Wi-Fi). Change it any
+  time from **Admin → Settings**, or set `BASE_URL` in `.env`.
+
+While developing the front end, run the API and the Vite dev server side by side:
+
+```bash
+npm run dev           # API on :3000, restarts on changes
+npm run dev:web       # React app on :5173 with hot reload (sends /api to :3000)
+```
 
 Useful scripts:
 
 | Command | What it does |
 | --- | --- |
-| `npm start` | run the server |
-| `npm run dev` | run with auto-restart on file changes |
-| `npm run seed:buses` | create the 19-bus fleet: buses, stops, one incharge account per bus |
-| `npm run seed:demo` | the fleet plus demo students (about 6 per bus) |
+| `npm start` | run the server (serves the built app from `dist/` and the API) |
+| `npm run build` | build the React app into `dist/` |
+| `npm run dev` / `npm run dev:web` | API with auto-restart / React app with hot reload |
+| `npm run seed:buses` | create a demo 19-bus fleet: buses, stops, one incharge account per bus |
+| `npm run seed:demo` | the demo fleet plus demo students (about 6 per bus) |
 | `npm run reset-admin` | reset the admin password if it is lost |
 | `npm run backup` | consistent copy of the database into `data/backups/` |
-| `npm run test:security` | end-to-end test of every security and portal rule against a running server |
-| `npm run serve:function` | run the Vercel serverless function locally on port 3001 |
+| `npm run test:security` | end-to-end test of every security and verification rule against a running server |
+| `npm run serve:function` | run the serverless function locally on port 3001 |
 
 ---
 
-## The 19 bus portals
+## Bus portals
 
 | What | Where | Who can open it |
 | --- | --- | --- |
-| Bus N portal (QR, live count, student roster, manual check-in, end trip) | `/bus/N` | the bus admin of bus N or the super admin; operations admins can watch it (no QR, no actions) |
-| Portal picker (all 19 buses with live status) | `/incharge` | super and operations admins, bus admins with no assigned bus |
-| Bus N student link (what the QR encodes) | `/checkin/N?t=<rotating token>` | any phone that scanned bus N's live QR |
+| Bus portal (start trip, QR, live count, roster, manual check-in, end trip) | `/bus/<number>` | that bus's incharge or the super admin; operations admins can watch it (no QR, no actions) |
+| Portal picker (every bus with live status) | `/incharge` | super and operations admins, incharges with no assigned bus |
+| Student verification (what the QR encodes) | `/checkin/<number>?t=<token>` | any phone that scanned that bus's QR |
 | Transport console | `/admin` | super admin (everything), operations admin (read-only) |
 
-* An incharge signs in and is taken straight to their own portal. Opening another bus's
-  portal bounces them back to theirs; the API refuses it too (`WRONG_BUS_PORTAL`).
-* Each portal's QR is unique to that bus: the token is tied to the bus's running trip, the
-  link carries the bus number, and a bus 12 token presented on the bus 7 link is rejected.
-* The fleet is defined in `scripts/fleet.js` (numbers, names, routes, stops). Everything can be
-  renamed or reassigned later from **Admin → Buses & stops** and **Admin → Staff**; the
-  portal URL follows the bus number.
+* An incharge signs in and lands straight on their own bus portal. Opening another bus's portal
+  sends them back to theirs; the API refuses it too (`WRONG_BUS_PORTAL`).
+* Each bus's QR is unique to that bus: a UU-12 token presented on the UU-10 link is rejected.
+* Buses, routes and accounts can be edited any time under **Admin → Buses & routes** and
+  **Admin → Staff**; the portal address follows the bus number.
 
 ---
 
@@ -74,31 +86,29 @@ Useful scripts:
 
 ```
  Bus screen (incharge, signed in)        Student phone (no login)            Admin console
- ┌──────────────────────────────┐        ┌──────────────────────────┐        ┌───────────────────┐
- │ Start trip → rotating QR     │ scan   │ /checkin?t=<token>       │        │ live tiles, feed, │
- │ token = tripId.slot.HMAC     │ ─────► │ token → private session  │        │ trip cards, flags │
- │ new token every 20 s         │        │ name + ID → record shown │        │ students, buses,  │
- │ live count + names (SSE)     │ ◄───── │ Done → check-in recorded │ ─────► │ staff, trips,     │
- └──────────────────────────────┘ event  └──────────────────────────┘ event  │ audit, settings   │
-                                                                             └───────────────────┘
+ ┌──────────────────────────────┐        ┌──────────────────────────┐        ┌──────────────────────┐
+ │ Start trip → bus QR          │ scan   │ /checkin/UU-10?t=<token> │        │ today: verified of N │
+ │ token signed (HMAC)          │ ─────► │ token → private session  │        │ per bus, duplicates, │
+ │ live count + roster          │        │ UUID / enrollment no.    │        │ today's verified     │
+ │ "just verified" photo card   │ ◄───── │ → BUS NO. card, VERIFIED │ ─────► │ students, CSV, trips │
+ └──────────────────────────────┘ event  └──────────────────────────┘ event  └──────────────────────┘
 ```
 
-1. **Incharge** signs in, lands on their bus portal, picks the direction (to / from college)
-   and presses *Start trip*.
-2. The portal shows the bus's QR. It encodes `/checkin/<bus>` with a signed token. There are two
-   modes (Admin → Settings → QR validity):
+1. **Incharge** signs in, lands on their bus portal, picks **Morning** (to college) or
+   **Evening** (from college) and presses *Start trip*.
+2. The portal shows the bus's QR. Two modes (Admin → Settings → QR validity):
    * **Whole day** (default): one QR per bus per calendar day, India time. It works for whichever
-     trip the bus is running, can be printed, and **New QR code** on the bus portal cancels it.
+     trip the bus is running, can be printed, and **New QR code** on the portal cancels it.
    * **Rotating**: a new QR every 20 seconds, bound to the trip; only the live screen works.
-3. **Student** scans with the normal camera app. The server validates the token, opens a
-   5-minute check-in session bound to that phone, and asks for name + student ID.
-4. Both must match the database record. Everything shown (course, year, specialization, stop,
-   bus) comes from the server; the phone cannot change it.
-5. **Done** writes the check-in atomically and sends it to the incharge screen and every admin
-   dashboard: instantly over Server-Sent Events on a single server, or within ~2.5 s by polling
-   on Vercel. The counter animates, the name appears, a flag
-   is shown if anything is unusual.
-6. **End trip** closes the trip; the QR and all pending sessions die immediately.
+3. **Student** scans with the normal camera app. The server checks the token and opens a
+   5-minute verification session bound to that phone.
+4. The student types their **UUID or enrollment number** and taps **Verify Student**. One request
+   does the lookup and the atomic check-in. Everything on the card comes from the database.
+5. The verification appears on the bus portal (with the student's photo, so the incharge can
+   compare faces) and on every admin dashboard: instantly over Server-Sent Events on a single
+   server, or within a few seconds by polling on Netlify / Vercel.
+6. Scanning again after being verified shows the card marked **ALREADY VERIFIED** and counts as a
+   **duplicate**. **End trip** closes the trip; the QR and all pending sessions stop working.
 
 ---
 
@@ -109,17 +119,17 @@ Useful scripts:
 | Screenshot / forwarded QR | **Rotating mode:** token changes every 20 s and is accepted for at most 40 s; only the live screen works. **Whole-day mode:** a photo of the QR works until midnight, so an absent student *can* check in if someone forwards it. The incharge sees every name live and can press **New QR code** to cancel a leaked QR; switch to rotating mode for the strongest protection. Tampered, old-day or future tokens are rejected in both modes. |
 | Friend scans and types your ID | **One phone, one student.** The phone is identified by a signed HttpOnly cookie mirrored in localStorage; the first student who boards with a phone owns it. Another student on that phone is refused. A phone can board only one student per trip. |
 | Student uses many phones | Max 2 phones per student per 30 days; after that admin must reset devices (Students → history). First boarding from a new phone is flagged **new_device**. |
-| Boarding the wrong bus | Refused: the ID and name must belong to a student registered on that bus, otherwise the student sees **Invalid**. Manual check-ins and the bus admin's student search are limited to the bus's own students too. |
-| Guessing IDs | Name **and** ID must match; the error never says which was wrong. 6 attempts per scan, then a fresh scan is needed. Generous per-network rate limits (campus NAT friendly). |
-| Double check-in | Database unique constraint per (trip, student) and per (trip, phone). |
+| Boarding the wrong bus | Refused: the UUID / enrollment number must belong to a student registered on that bus, otherwise the student sees **Student not found for this bus**. Manual check-ins and the bus admin's student search are limited to the bus's own students too. |
+| Guessing IDs | 6 attempts per scan, then a fresh scan is needed; the QR session lasts 5 minutes and is tied to the phone. Generous per-network rate limits (campus NAT friendly). A guessed ID still runs into the one-phone-one-student rule, and the incharge sees each verified student's name and photo live. |
+| Double check-in | Database unique constraint per (trip, student) and per (trip, phone). A repeat scan shows **ALREADY VERIFIED** and is counted as a duplicate. |
 | Staff account attacks | scrypt password hashing, constant-time checks, 5-strike 15-minute lockout, temporary passwords that must be changed, session ids stored hashed, sessions expire after 12 h idle / 7 days max. |
 | CSRF / cross-site | SameSite cookies + per-session CSRF token + Origin check on every state-changing call. |
 | XSS / injection | Strict Content-Security-Policy (no inline scripts or styles, same-origin only), all output escaped, all SQL parameterised, input validated with zod. |
 | Tampering by staff | Manual check-ins are flagged **manual** with the staff name and reason; every admin action is in the audit log. |
 
 What it cannot do: it cannot see whether the phone is physically on the bus. For that, the
-incharge is in the loop: names appear live, flagged entries stand out, and the "not boarded yet"
-list shows who is still missing.
+incharge is in the loop: each verified student appears live with their photo, flagged entries
+stand out, and the "not yet" list shows who is still missing.
 
 ---
 
@@ -153,8 +163,8 @@ Copy `.env.example` to `.env`. Everything is optional.
 ## Deploy on Vercel
 
 Students board on **mobile data**, so production needs a public HTTPS address. The repo is
-ready for Vercel: `api/index.js` runs the whole app as one serverless function, `public/` is
-served from Vercel's CDN, and functions are pinned to Mumbai (`bom1`) in `vercel.json`.
+ready for Vercel: `npm run build` builds the React app into `dist/`, which Vercel's CDN serves;
+`api/index.js` runs the API as one serverless function, and functions are pinned to Mumbai (`bom1`) in `vercel.json`.
 
 Serverless functions have no disk that survives between requests, so on Vercel the data lives
 in **Turso**, a hosted database that speaks the same SQLite dialect (nothing in the app changes).
@@ -163,8 +173,8 @@ throttles are shared through the database so every function instance enforces th
 
 **1. Create the project**
 
-1. Go to <https://vercel.com/new>, sign in with GitHub and import `Ashutosh26-uu/UU-bus-erp22`.
-   The framework preset comes from `vercel.json` ("Other"); there is no build step.
+1. Go to <https://vercel.com/new>, sign in with GitHub and import `manishshukla00/UU-bus-erp22`.
+   The framework preset comes from `vercel.json` ("Other"); it runs `npm run build`.
 2. Before the first deploy, add an environment variable `SESSION_SECRET` with a long random
    value. Generate one with:
    ```bash
@@ -196,7 +206,7 @@ the seed (Git Bash / macOS / Linux syntax), which then creates the 19 buses, the
 The passwords are printed and saved to `data/turso-initial-admin.txt` and
 `data/turso-incharge-accounts.txt` (separate from your local files). Instead of seeding you can
 set `ADMIN_PASSWORD` on Vercel: the first request then creates `admin` with that password, and
-**Admin → Buses & stops → Create 19-bus fleet** creates the buses and incharge accounts.
+**Admin → Import Excel** creates the buses, incharge accounts and students from the workbook.
 
 **4. Use it**
 
@@ -224,8 +234,8 @@ Good to know:
 ## Deploy on Netlify
 
 Same idea as Vercel: `netlify/functions/server.js` runs the whole app as one function
-(through `serverless-http`), `public/` is served from Netlify's CDN, `netlify.toml` routes every
-other request to the function, and the data lives in **Turso**. Live updates use polling and
+(through `serverless-http`), the React app in `dist/` is served from Netlify's CDN (pages load
+without waiting for the function), `netlify.toml` sends `/api/*` to the function, and the data lives in **Turso**. Live updates use polling and
 throttles are shared through the database, exactly as on Vercel.
 
 **1. Create a Turso database**
@@ -240,8 +250,8 @@ injects.
 
 **2. Create the site**
 
-<https://app.netlify.com/start> → Import from Git → GitHub → `Ashutosh26-uu/UU-bus-erp22`.
-Build settings come from `netlify.toml` (no build step). Before deploying, add these environment
+<https://app.netlify.com/start> → Import from Git → GitHub → `manishshukla00/UU-bus-erp22`.
+Build settings come from `netlify.toml` (`npm run build`, publish `dist`). Before deploying, add these environment
 variables (Site configuration → Environment variables):
 
 | Variable | Value |
@@ -255,12 +265,12 @@ variables (Site configuration → Environment variables):
 Deploy (or redeploy after changing variables). Until the database variables exist, every page
 shows a short "Finish the server setup" checklist.
 
-**3. Create the 19 buses and accounts**
+**3. Import the buses, incharges and students**
 
-Sign in as `admin`, set a new password, open **Admin → Buses & stops → Create 19-bus fleet**.
-It creates the buses, their stops and `incharge1` … `incharge19`, and shows the temporary
-passwords **once** with Copy and Download CSV buttons. Then import the students
-(Admin → Students → Import CSV). The same button works on Vercel and on a local server.
+Sign in as `admin`, set a new password, open **Admin → Import Excel** and choose the
+*United University Bus Database* workbook. It creates the buses, one incharge account per bus
+(Login ID = `InchargeID`) and every student, and shows the new incharge passwords **once** with
+Copy and Download CSV buttons. The same page works on Vercel and on a local server.
 
 Command-line alternative (Netlify CLI):
 
@@ -296,59 +306,70 @@ Good to know:
 
 ---
 
-## Importing students
+## Importing data
 
-**Admin → Students → Import CSV**. Header row required, column names are flexible:
+**The Excel workbook (recommended): Admin → Import Excel.** Choose the *United University Bus
+Database* `.xlsx` (the Apps Script layout). It is read in the browser and previewed first; on
+**Import**:
+
+| Sheet | Columns used | Becomes |
+| --- | --- | --- |
+| Buses | BusNo, Route, Active | buses (portal `/bus/<BusNo>`) |
+| Incharges | InchargeID, Name, BusNo, Active, Role | one incharge account per row with role INCHARGE (Login ID = InchargeID, password generated and shown once). The ADMIN row, Salt and PINHash are ignored. |
+| Students | UUID, Name, PhotoURL, Route, BusNo, Course, EnrollmentNo, Active | students. `Route` is the pickup point; `Active` FALSE keeps the student but blocks verification. |
+
+VerificationKeys / VerificationLogs are not imported (they are the old system's history).
+
+**CSV or a single sheet: Admin → Students → Import.** Header row required, column names are
+flexible (`UUID` or `id`, `EnrollmentNo`, `BusNo` or `bus`, `Route` or `stop`, `PhotoURL`, …):
 
 ```csv
-uuid,name,course,year,specialization,bus,stop,phone
-UU2023CS0142,Aditi Sharma,B.Tech,2nd,CSE (AI & ML),12,Rajpur Road,9876543210
+UUID,Name,PhotoURL,Route,BusNo,Course,EnrollmentNo,Active
+UU253500002,Akanksha Yadav,,01 Trivenipuram Crossing Jhunsi,UU-10,AGRI-BSc-AG (Honors)-2025-2-AG,UU253500002,TRUE
 ```
 
-* `uuid` can also be called `id`, `enrollment`, `roll no`, `reg no` …
-* `bus` is the bus number (1–19); unknown buses and stops are created automatically.
-* Existing IDs are updated, not duplicated. Export from the same page gives you the full list.
+* Unknown buses and routes are created automatically. Existing UUIDs are updated, not duplicated.
+* `PhotoURL` must be a public `https://` link to an image; without one the card shows a placeholder.
+* **Export** on the Students page gives the same columns back, so the file round-trips.
 
 ---
 
 ## Roles
 
-* **Super admin** (role `admin`): everything: students, buses and stops, staff accounts and
-  every password, trips, flags, audit log, settings, device resets. Can run any bus portal.
-* **Operations admin** (role `operator`): sits between the super admin and the bus admins.
-  Sees the dashboard, students, buses, trips and flags, and can watch any bus live, but cannot
-  change anything (no trips, no check-ins, no QR, no edits, not even their own password).
-* **Bus admin** (role `incharge`, one per bus): signs in straight into their own bus portal,
+* **Super admin** (role `admin`): everything: students, buses and routes, Excel import, staff
+  accounts and their passwords, trips, flags, audit log, settings, device resets. Can run any bus portal.
+* **Operations admin** (role `operator`): sees the dashboard, students, buses, trips and flags,
+  and can watch any bus live, but cannot change anything.
+* **Bus incharge** (role `incharge`, one per bus): signs in straight into their own bus portal,
   starts and ends that bus's trips, shows the QR, sees every student of the bus with who has
   verified, and can mark a student manually. Cannot open another bus, and **cannot change their
-  own password**: only the super admin sets it (Staff → key button) and can look it up later
-  (Staff → eye button; stored encrypted, every view is in the audit log). Super admin passwords
-  are never viewable.
-* **Student**: no account, no app, no login. Scan, enter name and student ID, check the details,
-  tap Verify. Only students registered on that bus are accepted; anyone else sees "Invalid".
+  own password**: only the super admin sets it (Staff → key) and can look it up later (Staff → eye;
+  stored encrypted, every view is in the audit log). Super admin passwords are never viewable.
+* **Student**: no account, no app, no login. Scan, enter UUID or enrollment number, tap Verify.
+  Only students registered on that bus are accepted.
 
 ---
 
 ## Project layout
 
 ```
-api/index.js         Vercel serverless entry (exports the Express app)
-vercel.json          Vercel config: static output, function settings, Mumbai region, rewrites
-netlify/functions/   Netlify Functions entry (Express app through serverless-http)
-netlify.toml         Netlify config: publish public/, bundle views, route the rest to the function
+web/                 React 19 + Tailwind CSS 4 front end (Vite), built into dist/
+  src/pages/         Checkin (student phone), Login, admin/* (console), portal/* (bus portals)
+  src/components/    UI kit, StudentCard (the verified card), brand header, password dialog
+  src/lib/           API client, tiny router, session, live updates (SSE or polling), formatting
+public/              images and web manifest (copied into dist/)
 src/
-  app.js             Express app: security headers, setup gate, routes, error handling
+  app.js             Express app: security headers, setup gate, API routes, serves dist/
   server.js          long-running server for `npm start` (listen, timers, graceful shutdown)
   config.js          env, serverless detection, LAN detection
   db.js              async DB layer: node:sqlite locally or Turso/libSQL, migrations, housekeeping
-  security.js        scrypt, HMAC, signed values, name/ID normalisation
+  security.js        scrypt, HMAC, signed values, ID normalisation
   middleware/        session auth + CSRF, device identity, rate limits (memory or DB-shared)
-  services/          rotating QR tokens, trips, check-ins (anti-proxy rules), live events, audit, CSV
+  services/          QR tokens, trips, check-ins (anti-proxy rules), imports (CSV / Excel), live events, audit
   routes/            /api/auth, /api/admin, /api/incharge, /api/checkin
-views/               login, admin, incharge, checkin, 404 pages
-public/              css, js (vanilla ES modules, no build step), icons
-scripts/             fleet (the 19 buses), seed-buses, seed-demo, reset-admin, backup,
-                     security-test, serve-function (run the Vercel function locally)
+api/index.js         Vercel serverless entry          vercel.json   Vercel config
+netlify/functions/   Netlify Functions entry          netlify.toml  Netlify config (CDN + /api function)
+scripts/             seed, reset-admin, backup, security-test, serve-function
 data/                local database, secret key, credentials, backups (git-ignored)
 ```
 

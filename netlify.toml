@@ -1,7 +1,7 @@
-# Netlify: static files from public/ on the CDN, everything else to one function running the app.
+# Netlify: the React app (built into dist/) is served from the CDN; only /api/* runs the Node function.
 [build]
-  publish = "public"
-  command = "echo 'No build step: static files are served from public/'"
+  publish = "dist"
+  command = "npm run build"
 
 [build.environment]
   NODE_VERSION = "22"
@@ -10,19 +10,43 @@
   directory = "netlify/functions"
   # esbuild keeps the function an ES module (the app uses import.meta and dynamic imports)
   node_bundler = "esbuild"
-  # views are read from disk by the function; keep them in the bundle
-  included_files = ["views/**"]
 
 [functions.server]
   # optional: on Pro plans pick the region closest to your users and your Turso database, e.g. "sin"
   # region = "sin"
 
-# Shadowing rules: a request that matches a real file in public/ is served as that file;
-# everything else (pages and /api/*) goes to the function.
+# The API goes to the function (the Express app)...
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/server/api/:splat"
+  status = 200
+
+# ...and every page is the single-page app (real files in dist/ are served as themselves first).
 [[redirects]]
   from = "/*"
-  to = "/.netlify/functions/server/:splat"
+  to = "/index.html"
   status = 200
+
+# Same security headers as the Express app sends, for pages served straight from the CDN.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+    Strict-Transport-Security = "max-age=15552000; includeSubDomains"
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=()"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
 
 [[headers]]
   for = "/manifest.webmanifest"

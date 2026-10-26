@@ -32,15 +32,25 @@ export function toCsv(rows, headers) {
   return lines.join('\r\n') + '\r\n';
 }
 
+// The Apps Script workbook's "Route" column is the student's pickup point, so it maps to the stop.
 const HEADER_ALIASES = {
-  uuid: ['uuid', 'id', 'studentid', 'enrollment', 'enrollmentno', 'rollno', 'roll', 'uid', 'universityid', 'regno', 'registrationno'],
+  uuid: ['uuid', 'id', 'studentid', 'rollno', 'roll', 'uid', 'universityid', 'regno', 'registrationno'],
+  enrollment: ['enrollmentno', 'enrollment', 'enrollmentnumber', 'enrolmentno', 'enrolment', 'enrolmentnumber'],
   name: ['name', 'studentname', 'fullname'],
+  photo: ['photourl', 'photo', 'image', 'imageurl', 'picture', 'pictureurl'],
   course: ['course', 'program', 'programme', 'degree'],
   year: ['year', 'sem', 'semester', 'batch'],
   specialization: ['specialization', 'specialisation', 'branch', 'stream', 'spec'],
-  bus: ['bus', 'busnumber', 'busno', 'busid', 'route'],
-  stop: ['stop', 'stopname', 'busstop', 'pickup', 'pickuppoint'],
+  bus: ['bus', 'busnumber', 'busno', 'busid'],
+  stop: ['stop', 'stopname', 'busstop', 'pickup', 'pickuppoint', 'route'],
   phone: ['phone', 'mobile', 'contact', 'phoneno'],
+  active: ['active', 'status', 'enabled'],
+};
+
+/** TRUE / YES / ACTIVE / 1 (any case), or an empty cell, count as active. */
+export const isActiveCell = (v) => {
+  const s = String(v ?? '').trim().toUpperCase();
+  return s === '' || ['TRUE', 'YES', 'Y', 'ACTIVE', '1'].includes(s);
 };
 
 /** Map a header row to canonical keys. Returns { index: { uuid: 0, name: 1 ... } } */

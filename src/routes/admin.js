@@ -9,7 +9,8 @@ import { hashPassword, generatePassword, passwordProblem, normUuid, sealPassword
 /** Encrypted copy for later viewing: only for passwords the super admin issues (never a super admin's own). */
 const viewCopy = (role, password) => (role === 'admin' ? null : sealPassword(password, config.sessionSecret));
 import { audit } from '../services/audit.js';
-import { parseCsv, toCsv, mapHeaders } from '../services/csv.js';
+import { parseCsv, toCsv } from '../services/csv.js';
+import { importStudents, importBuses, importIncharges } from '../services/importer.js';
 import { tripSummary, listTrips, activeTrips, endTrip } from '../services/trips.js';
 import { clientCount } from '../services/events.js';
 import { baseUrl, qrMode, setQrMode } from '../services/qr.js';
@@ -20,7 +21,7 @@ const router = Router();
 router.use(requireAuth('admin', 'operator'));
 // Operations admins only watch: dashboard, students, buses, trips and flags, read-only.
 router.use(operatorReadOnly([
-  /^\/dashboard$/, /^\/students$/, /^\/students\/\d+\/history$/, /^\/buses$/, /^\/trips$/, /^\/trips\/\d+$/, /^\/flags$/,
+  /^\/dashboard$/, /^\/today$/, /^\/today\/export\.csv$/, /^\/students$/, /^\/students\/\d+\/history$/, /^\/buses$/, /^\/trips$/, /^\/trips\/\d+$/, /^\/flags$/,
 ]));
 
 // ------------------------------------------------------------------ helpers
@@ -75,10 +76,76 @@ router.get('/dashboard', async (req, res) => {
   res.json({ stats, activeTrips: live, recent, serverTime: Date.now() });
 });
 
+// ------------------------------------------------------------------ today's verifications
+/**
+ * One day's report (India time, default today), optionally for one bus:
+ *  - per bus: students verified (distinct) of active students, boardings, repeat scans, live trip
+ *  - every verification and repeat scan of the day, newest first
+ */
+async function dayReport(dateStr, busId) {
+  const { start, end } = dayRange(dateStr);
+  const busFilter = busId ? 'AND t.bus_id = ?' : '';
+  const busParam = busId ? [busId] : [];
+  const [buses, verified, duplicates] = await Promise.all([
+    all(
+      `SELECT b.id, b.number, b.name, b.route,
+              (SELECT COUNT(*) FROM students s WHERE s.bus_id = b.id AND s.active = 1) AS students,
+              (SELECT COUNT(DISTINCT c.student_id) FROM checkins c JOIN trips t ON t.id = c.trip_id WHERE t.bus_id = b.id AND c.created_at >= ? AND c.created_at < ?) AS verified,
+              (SELECT COUNT(*) FROM checkins c JOIN trips t ON t.id = c.trip_id WHERE t.bus_id = b.id AND c.created_at >= ? AND c.created_at < ?) AS boardings,
+              (SELECT COUNT(*) FROM duplicates d JOIN trips t ON t.id = d.trip_id WHERE t.bus_id = b.id AND d.created_at >= ? AND d.created_at < ?) AS duplicates,
+              t.id AS live_trip, t.direction AS live_direction
+         FROM buses b LEFT JOIN trips t ON t.bus_id = b.id AND t.status = 'active'
+        WHERE b.active = 1 ${busId ? 'AND b.id = ?' : ''} ORDER BY LENGTH(b.number), b.number`,
+      start, end, start, end, start, end, ...busParam,
+    ),
+    all(
+      `SELECT c.id, c.trip_id, c.created_at, c.method, c.flags, s.id AS student_id, s.uuid, s.enrollment_no, s.name, s.photo_url, s.course,
+              st.name AS stop, b.number AS bus_number, t.direction, m.name AS marked_by_name
+         FROM checkins c JOIN students s ON s.id = c.student_id JOIN trips t ON t.id = c.trip_id JOIN buses b ON b.id = t.bus_id
+         LEFT JOIN stops st ON st.id = s.stop_id LEFT JOIN users m ON m.id = c.marked_by
+        WHERE c.created_at >= ? AND c.created_at < ? ${busFilter} ORDER BY c.created_at DESC LIMIT 5000`,
+      start, end, ...busParam,
+    ),
+    all(
+      `SELECT d.id, d.trip_id, d.created_at, s.id AS student_id, s.uuid, s.enrollment_no, s.name, s.course, st.name AS stop, b.number AS bus_number, t.direction
+         FROM duplicates d JOIN students s ON s.id = d.student_id JOIN trips t ON t.id = d.trip_id JOIN buses b ON b.id = t.bus_id
+         LEFT JOIN stops st ON st.id = s.stop_id
+        WHERE d.created_at >= ? AND d.created_at < ? ${busFilter} ORDER BY d.created_at DESC LIMIT 2000`,
+      start, end, ...busParam,
+    ),
+  ]);
+  const totals = buses.reduce((a, b) => ({
+    students: a.students + b.students, verified: a.verified + b.verified, boardings: a.boardings + b.boardings, duplicates: a.duplicates + b.duplicates, live: a.live + (b.live_trip ? 1 : 0),
+  }), { students: 0, verified: 0, boardings: 0, duplicates: 0, live: 0 });
+  return { start, end, buses, totals, verified, duplicates };
+}
+
+router.get('/today', async (req, res) => {
+  const busId = req.query.bus ? intParam(req.query.bus, 'bus') : null;
+  res.json({ ...(await dayReport(String(req.query.date || ''), busId)), serverTime: Date.now() });
+});
+
+router.get('/today/export.csv', async (req, res) => {
+  const busId = req.query.bus ? intParam(req.query.bus, 'bus') : null;
+  const r = await dayReport(String(req.query.date || ''), busId);
+  const day = new Date(r.start + IST_OFFSET_MS).toISOString().slice(0, 10);
+  const rows = [
+    ...r.verified.map((c) => ({ ...c, status: c.method === 'manual' ? 'VERIFIED (MANUAL)' : 'VERIFIED' })),
+    ...r.duplicates.map((d) => ({ ...d, status: 'DUPLICATE' })),
+  ].sort((a, b) => a.created_at - b.created_at).map((x) => ({
+    ...x, time: fmtLocal(x.created_at), trip: x.direction === 'to_college' ? 'To college' : 'From college',
+  }));
+  res.set('Content-Type', 'text/csv; charset=utf-8');
+  res.set('Content-Disposition', `attachment; filename="verified-${day}${busId ? `-bus-${r.buses[0]?.number ?? busId}` : ''}.csv"`);
+  res.send(toCsv(rows, ['time', 'uuid', 'enrollment_no', 'name', 'bus_number', 'trip', 'status', 'stop', 'course', 'flags']));
+});
+
 // ------------------------------------------------------------------ students
 const studentSchema = z.object({
   uuid: str(40, 2).transform(normUuid),
+  enrollment_no: str(40).default('').transform(normUuid),
   name: str(80, 2),
+  photo_url: str(500).default('').refine((v) => v === '' || /^https:\/\/[^\s"'<>]+$/i.test(v), 'Photo URL must start with https://'),
   course: str(80).default(''),
   year: str(20).default(''),
   specialization: str(80).default(''),
@@ -95,7 +162,7 @@ router.get('/students', async (req, res) => {
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
   const where = [];
   const params = [];
-  if (q) { const like = `%${q.replace(/[%_]/g, '')}%`; where.push('(s.name LIKE ? OR s.uuid LIKE ? OR s.course LIKE ?)'); params.push(like, like, like); }
+  if (q) { const like = `%${q.replace(/[%_]/g, '')}%`; where.push('(s.name LIKE ? OR s.uuid LIKE ? OR s.enrollment_no LIKE ? OR s.course LIKE ?)'); params.push(like, like, like, like); }
   if (bus === 'none') where.push('s.bus_id IS NULL');
   else if (bus) { where.push('s.bus_id = ?'); params.push(intParam(bus, 'bus')); }
   if (req.query.active === '1') where.push('s.active = 1');
@@ -118,8 +185,8 @@ router.post('/students', async (req, res) => {
   if (await get('SELECT id FROM students WHERE uuid = ?', d.uuid)) throw new HttpError(409, 'A student with that ID already exists');
   const t = now();
   const id = (await run(
-    'INSERT INTO students(uuid,name,course,year,specialization,bus_id,stop_id,phone,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-    d.uuid, d.name, d.course, d.year, d.specialization, d.bus_id, d.stop_id, d.phone, d.active, t, t,
+    'INSERT INTO students(uuid,enrollment_no,name,photo_url,course,year,specialization,bus_id,stop_id,phone,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    d.uuid, d.enrollment_no, d.name, d.photo_url, d.course, d.year, d.specialization, d.bus_id, d.stop_id, d.phone, d.active, t, t,
   )).lastInsertRowid;
   await audit(req, 'student.create', 'student', id, `${d.uuid} ${d.name}`);
   res.status(201).json({ id });
@@ -132,8 +199,8 @@ router.put('/students/:id', async (req, res) => {
   await ensureStopOnBus(d.stop_id, d.bus_id);
   if (await get('SELECT id FROM students WHERE uuid = ? AND id <> ?', d.uuid, id)) throw new HttpError(409, 'Another student already has that ID');
   await run(
-    'UPDATE students SET uuid=?, name=?, course=?, year=?, specialization=?, bus_id=?, stop_id=?, phone=?, active=?, updated_at=? WHERE id = ?',
-    d.uuid, d.name, d.course, d.year, d.specialization, d.bus_id, d.stop_id, d.phone, d.active, now(), id,
+    'UPDATE students SET uuid=?, enrollment_no=?, name=?, photo_url=?, course=?, year=?, specialization=?, bus_id=?, stop_id=?, phone=?, active=?, updated_at=? WHERE id = ?',
+    d.uuid, d.enrollment_no, d.name, d.photo_url, d.course, d.year, d.specialization, d.bus_id, d.stop_id, d.phone, d.active, now(), id,
   );
   await audit(req, 'student.update', 'student', id, `${d.uuid} ${d.name}`);
   res.json({ ok: true });
@@ -177,73 +244,39 @@ router.post('/students/:id/devices/reset', async (req, res) => {
   res.json({ ok: true, unlinked: r.changes });
 });
 
+/** CSV text (body text/csv, or JSON { csv }) or a parsed table (JSON { rows: [[header...], [...]] }). */
 router.post('/students/import', async (req, res) => {
-  const text = typeof req.body === 'string' ? req.body : req.body?.csv;
-  if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'Send CSV text');
-  const rows = parseCsv(text);
-  if (rows.length < 2) throw new HttpError(400, 'CSV needs a header row and at least one student');
-  if (rows.length > 20_001) throw new HttpError(413, 'Import at most 20,000 students per file');
-  const idx = mapHeaders(rows[0]);
-  if (idx.uuid == null || idx.name == null) throw new HttpError(400, 'CSV header must include "uuid" (or id/enrollment) and "name" columns');
-  const cell = (r, k) => (idx[k] == null ? '' : String(r[idx[k]] ?? '').trim());
-  const summary = { inserted: 0, updated: 0, skipped: 0, errors: [], busesCreated: 0, stopsCreated: 0 };
-
-  // Read what exists once, then write everything as set-based statements in atomic chunks:
-  // a few round trips for thousands of rows, even against a hosted database.
-  const [busRows, stopRows, uuidRows] = await Promise.all([
-    all('SELECT number FROM buses'),
-    all('SELECT b.number, s.name FROM stops s JOIN buses b ON b.id = s.bus_id'),
-    all('SELECT uuid FROM students'),
-  ]);
-  const knownBuses = new Set(busRows.map((b) => b.number.toLowerCase()));
-  const knownStops = new Set(stopRows.map((s) => `${s.number.toLowerCase()}|${s.name.toLowerCase()}`));
-  const knownUuids = new Set(uuidRows.map((s) => s.uuid.toUpperCase()));
-  const ts = now();
-  const busStmts = [];
-  const stopStmts = [];
-  const studentStmts = [];
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    const uuid = normUuid(cell(r, 'uuid')).slice(0, 40);
-    const name = cell(r, 'name').slice(0, 80);
-    if (!uuid || !name) { summary.errors.push(`Row ${i + 1}: missing id or name`); summary.skipped++; continue; }
-    const busNo = cell(r, 'bus').slice(0, 20);
-    const stopName = busNo ? cell(r, 'stop').slice(0, 80) : '';
-    if (busNo && !knownBuses.has(busNo.toLowerCase())) {
-      knownBuses.add(busNo.toLowerCase());
-      busStmts.push(['INSERT OR IGNORE INTO buses(number, name, route, active, created_at) VALUES(?, ?, \'\', 1, ?)', busNo, `Bus ${busNo}`, ts]);
-      summary.busesCreated++;
-    }
-    const sk = `${busNo.toLowerCase()}|${stopName.toLowerCase()}`;
-    if (stopName && !knownStops.has(sk)) {
-      knownStops.add(sk);
-      stopStmts.push([
-        `INSERT OR IGNORE INTO stops(bus_id, name, seq)
-         SELECT b.id, ?, COALESCE((SELECT MAX(seq) FROM stops WHERE bus_id = b.id), 0) + 1 FROM buses b WHERE b.number = ?`,
-        stopName, busNo,
-      ]);
-      summary.stopsCreated++;
-    }
-    if (knownUuids.has(uuid)) summary.updated++;
-    else { knownUuids.add(uuid); summary.inserted++; }
-    studentStmts.push([
-      `INSERT INTO students(uuid, name, course, year, specialization, bus_id, stop_id, phone, active, created_at, updated_at)
-       VALUES(?, ?, ?, ?, ?,
-         (SELECT id FROM buses WHERE number = ?),
-         (SELECT s.id FROM stops s JOIN buses b ON b.id = s.bus_id WHERE b.number = ? AND s.name = ? COLLATE NOCASE),
-         ?, 1, ?, ?)
-       ON CONFLICT(uuid) DO UPDATE SET name = excluded.name, course = excluded.course, year = excluded.year,
-         specialization = excluded.specialization, bus_id = excluded.bus_id, stop_id = excluded.stop_id,
-         phone = excluded.phone, active = 1, updated_at = excluded.updated_at`,
-      uuid, name, cell(r, 'course').slice(0, 80), cell(r, 'year').slice(0, 20), cell(r, 'specialization').slice(0, 80),
-      busNo, busNo, stopName, cell(r, 'phone').slice(0, 20), ts, ts,
-    ]);
+  let rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+  if (!rows) {
+    const text = typeof req.body === 'string' ? req.body : req.body?.csv;
+    if (typeof text !== 'string' || !text.trim()) throw new HttpError(400, 'Send CSV text');
+    rows = parseCsv(text);
   }
-  await batchChunks([...busStmts, ...stopStmts]);
-  await batchChunks(studentStmts);
+  const summary = await importStudents(rows);
   await audit(req, 'student.import', 'student', null, `${summary.inserted} new, ${summary.updated} updated, ${summary.skipped} skipped`);
   res.json(summary);
 });
+
+/**
+ * The Apps Script workbook (Students, Buses, Incharges sheets), parsed in the browser and sent as
+ * JSON. Buses first, then incharge accounts (new ones get a password, shown once), then students.
+ */
+const sheetRows = z.array(z.array(z.any()).max(40)).max(20_001);
+router.post('/import/workbook', async (req, res) => {
+  const d = validate(z.object({
+    buses: z.array(z.object({ number: z.any(), route: z.any().optional(), active: z.any().optional() })).max(500).default([]),
+    incharges: z.array(z.object({ id: z.any(), name: z.any().optional(), bus: z.any().optional(), active: z.any().optional(), role: z.any().optional() })).max(500).default([]),
+    students: sheetRows.default([]),
+  }), req.body);
+  const buses = await importBuses(d.buses);
+  const incharges = await importIncharges(d.incharges);
+  const students = d.students.length > 1 ? await importStudents(d.students) : null;
+  await audit(req, 'workbook.import', 'student', null,
+    `buses ${buses.created} new/${buses.updated} updated; bus admins ${incharges.created.length} new/${incharges.updated} updated; students ${students ? `${students.inserted} new/${students.updated} updated` : 'none'}`);
+  res.set('Cache-Control', 'no-store');
+  res.json({ buses, incharges, students });
+});
+
 
 /** Dummy students (IDs DEMO-<bus>-<n>) for trying the system out; repeatable, removable. */
 router.post('/demo-students', async (req, res) => {
@@ -262,13 +295,15 @@ router.delete('/demo-students', async (req, res) => {
 
 router.get('/students/export.csv', async (req, res) => {
   const rows = await all(
-    `SELECT s.uuid, s.name, s.course, s.year, s.specialization, b.number AS bus, st.name AS stop, s.phone, s.active
+    `SELECT s.uuid, s.name, s.photo_url AS photourl, st.name AS route, b.number AS busno, s.course, s.enrollment_no AS enrollmentno,
+            CASE WHEN s.active THEN 'TRUE' ELSE 'FALSE' END AS active, s.year, s.specialization, s.phone
        FROM students s LEFT JOIN buses b ON b.id = s.bus_id LEFT JOIN stops st ON st.id = s.stop_id
-      ORDER BY CAST(b.number AS INTEGER), b.number, s.name`,
+      ORDER BY LENGTH(b.number), b.number, s.name`,
   );
   res.set('Content-Type', 'text/csv; charset=utf-8');
   res.set('Content-Disposition', `attachment; filename="students-${new Date().toISOString().slice(0, 10)}.csv"`);
-  res.send(toCsv(rows, ['uuid', 'name', 'course', 'year', 'specialization', 'bus', 'stop', 'phone', 'active']));
+  // same columns as the Apps Script Students sheet (then the extras), so the file imports straight back
+  res.send(toCsv(rows, ['uuid', 'name', 'photourl', 'route', 'busno', 'course', 'enrollmentno', 'active', 'year', 'specialization', 'phone']));
 });
 
 // ------------------------------------------------------------------ buses & stops
@@ -277,7 +312,7 @@ router.get('/buses', async (req, res) => {
     all(
       `SELECT b.*, (SELECT COUNT(*) FROM students s WHERE s.bus_id = b.id AND s.active = 1) AS students,
               (SELECT COUNT(*) FROM trips t WHERE t.bus_id = b.id AND t.status = 'active') AS live
-         FROM buses b ORDER BY b.active DESC, CAST(b.number AS INTEGER), b.number`,
+         FROM buses b ORDER BY b.active DESC, LENGTH(b.number), b.number`,
     ),
     all('SELECT * FROM stops ORDER BY bus_id, seq, name'),
     all("SELECT id, name, username, bus_id FROM users WHERE role = 'incharge' AND active = 1 ORDER BY name"),
@@ -386,7 +421,7 @@ router.get('/users', async (req, res) => {
       `SELECT u.id, u.username, u.name, u.role, u.bus_id, u.active, u.must_change_password, u.locked_until, u.created_at, b.number AS bus_number,
               (u.password_view IS NOT NULL) AS password_viewable,
               (SELECT MAX(last_seen) FROM sessions s WHERE s.user_id = u.id) AS last_seen
-         FROM users u LEFT JOIN buses b ON b.id = u.bus_id ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'operator' THEN 1 ELSE 2 END, CAST(b.number AS INTEGER), b.number, u.name COLLATE NOCASE`,
+         FROM users u LEFT JOIN buses b ON b.id = u.bus_id ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'operator' THEN 1 ELSE 2 END, LENGTH(b.number), b.number, u.name COLLATE NOCASE`,
     ),
   });
 });

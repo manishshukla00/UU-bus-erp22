@@ -7,14 +7,14 @@ import { requireAuth, canAccessBus, operatorReadOnly } from '../middleware/auth.
 import { audit } from '../services/audit.js';
 import { tokenFor, dayTokenFor, regenerateDayQr, qrMode, endOfIstDay, checkinUrl, qrSvg, secondsLeftInSlot, baseUrl } from '../services/qr.js';
 import { getTrip, getTripRaw, tripSummary, startTrip, endTrip, canAccessTrip, withCounts } from '../services/trips.js';
-import { manualCheckin, studentByUuid } from '../services/checkins.js';
+import { manualCheckin, studentByIdentifier } from '../services/checkins.js';
 
 const router = Router();
 router.use(requireAuth('incharge', 'admin', 'operator'));
 // Operations admins can watch any bus (state, portal list, trip roster) but get no QR and no actions.
 router.use(operatorReadOnly([/^\/state$/, /^\/buses$/, /^\/trips\/\d+$/]));
 
-const BUS_ORDER = 'ORDER BY CAST(number AS INTEGER), number';
+const BUS_ORDER = 'ORDER BY LENGTH(number), number';
 
 async function tripForUser(req) {
   const id = intParam(req.params.id, 'trip id');
@@ -70,7 +70,7 @@ router.get('/buses', async (req, res) => {
             t.id AS trip_id, t.direction, t.started_at,
             (SELECT COUNT(*) FROM checkins c WHERE c.trip_id = t.id) AS boarded
        FROM buses b LEFT JOIN trips t ON t.bus_id = b.id AND t.status = 'active'
-      WHERE b.active = 1 ${scope} ORDER BY CAST(b.number AS INTEGER), b.number`,
+      WHERE b.active = 1 ${scope} ORDER BY LENGTH(b.number), b.number`,
     ...params,
   );
   res.json({
@@ -140,8 +140,8 @@ router.post('/trips/:id/end', async (req, res) => {
 router.post('/trips/:id/manual', async (req, res) => {
   const trip = await tripForUser(req);
   const { uuid, note } = validate(z.object({ uuid: z.string().trim().min(2).max(40), note: z.string().trim().max(200).default('') }), req.body);
-  const student = await studentByUuid(uuid);
-  if (!student) throw new HttpError(404, 'No active student with that ID');
+  const student = await studentByIdentifier(uuid);
+  if (!student) throw new HttpError(404, 'No active student with that UUID or enrollment number');
   if (student.bus_id !== trip.bus_id) throw new HttpError(409, `${student.name} is not registered on Bus ${trip.bus_number}`, { code: 'NOT_ON_BUS' });
   const r = await manualCheckin({ trip, student, byUser: req.user, note });
   await audit(req, 'checkin.manual', 'checkin', r.id, `${student.uuid} ${student.name} on trip ${trip.id}${note ? ` — ${note}` : ''}`);
@@ -158,10 +158,10 @@ router.get('/students/search', async (req, res) => {
   if (q.length < 2) return res.json({ items: [] });
   const like = `%${q.replace(/[%_]/g, '')}%`;
   const items = await all(
-    `SELECT s.id, s.uuid, s.name, s.course, s.year, st.name AS stop, b.number AS bus_number
+    `SELECT s.id, s.uuid, s.enrollment_no, s.name, s.photo_url, s.course, s.year, st.name AS stop, b.number AS bus_number
        FROM students s LEFT JOIN stops st ON st.id = s.stop_id LEFT JOIN buses b ON b.id = s.bus_id
-      WHERE s.active = 1 AND s.bus_id = ? AND (s.uuid LIKE ? OR s.name LIKE ?) ORDER BY s.name COLLATE NOCASE LIMIT 12`,
-    busId, like, like,
+      WHERE s.active = 1 AND s.bus_id = ? AND (s.uuid LIKE ? OR s.name LIKE ? OR s.enrollment_no LIKE ?) ORDER BY s.name COLLATE NOCASE LIMIT 12`,
+    busId, like, like, like,
   );
   res.json({ items });
 });

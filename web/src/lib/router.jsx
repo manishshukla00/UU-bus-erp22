@@ -1,0 +1,42 @@
+import { useSyncExternalStore } from 'react';
+
+/*
+ * A tiny router: the app has a handful of top-level pages (/login, /admin, /incharge, /bus/:n,
+ * /checkin/:bus), so the URL is read straight from history instead of pulling in a router library.
+ */
+const listeners = new Set();
+const notify = () => listeners.forEach((l) => l());
+window.addEventListener('popstate', notify);
+window.addEventListener('hashchange', notify);
+
+const subscribe = (l) => { listeners.add(l); return () => listeners.delete(l); };
+const snapshot = () => location.pathname + location.search + location.hash;
+
+/** Re-renders on navigation; returns { path, search, hash }. */
+export function useLocation() {
+  useSyncExternalStore(subscribe, snapshot);
+  return { path: location.pathname, search: new URLSearchParams(location.search), hash: location.hash.slice(1) };
+}
+
+export function navigate(to, { replace = false } = {}) {
+  if (to === snapshot()) return;
+  history[replace ? 'replaceState' : 'pushState'](null, '', to);
+  notify();
+  window.scrollTo(0, 0);
+}
+
+/** <a> that navigates without a page load (plain clicks only; ctrl/middle-click open a new tab). */
+export function Link({ to, onClick, ...props }) {
+  return (
+    <a
+      href={to}
+      {...props}
+      onClick={(e) => {
+        onClick?.(e);
+        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        navigate(to);
+      }}
+    />
+  );
+}
