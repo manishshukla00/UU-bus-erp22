@@ -1,7 +1,7 @@
-import { all, batchChunks, now } from '../db.js';
+import { all, get, run, batchChunks, now } from '../db.js';
 import { config } from '../config.js';
 import { HttpError } from '../http.js';
-import { normUuid, hashPassword, generatePassword, sealPassword } from '../security.js';
+import { normUuid, hashPassword, generatePassword, sealPassword, randomId } from '../security.js';
 import { mapHeaders, isActiveCell } from './csv.js';
 
 /*
@@ -113,6 +113,72 @@ export async function importBuses(list) {
     }
   }
   await batchChunks(stmts);
+  return out;
+}
+
+const IST_OFFSET_MS = 330 * 60_000;
+const istDayOf = (ms) => new Date(ms + IST_OFFSET_MS).toISOString().slice(0, 10);
+const istHourOf = (ms) => new Date(ms + IST_OFFSET_MS).getUTCHours();
+
+/**
+ * VerificationLogs sheet (history from the Apps Script system): { uuid, bus, status, at } with `at`
+ * in epoch ms. Rows are grouped into one ended trip per bus, India-time day and direction (before
+ * 1 pm = to college, after = from college). VERIFIED rows become check-ins (flagged "imported"),
+ * DUPLICATE rows become duplicate scans. Safe to run again: the same trip is reused and nothing
+ * already imported is added twice.
+ */
+export async function importVerifications(list, actorId) {
+  const out = { trips: 0, verified: 0, duplicates: 0, skipped: 0, errors: [] };
+  const [students, buses, incharges] = await Promise.all([
+    all('SELECT id, uuid, bus_id FROM students'),
+    all('SELECT id, number FROM buses'),
+    all("SELECT id, bus_id FROM users WHERE role = 'incharge' AND active = 1 ORDER BY id"),
+  ]);
+  const studentBy = new Map(students.map((s) => [s.uuid.toUpperCase(), s]));
+  const busBy = new Map(buses.map((b) => [b.number.toLowerCase(), b]));
+  const groups = new Map();
+  for (const [i, v] of list.entries()) {
+    const at = Number(v.at);
+    const st = studentBy.get(normUuid(v.uuid));
+    const bus = busBy.get(String(v.bus ?? '').trim().toLowerCase());
+    const status = String(v.status ?? '').trim().toUpperCase();
+    if (!Number.isFinite(at) || at <= 0 || !st || !bus || !['VERIFIED', 'DUPLICATE'].includes(status)) {
+      out.skipped++;
+      if (out.errors.length < 20) out.errors.push(`Log row ${i + 2}: ${!st ? `unknown student ${v.uuid}` : !bus ? `unknown bus ${v.bus}` : 'bad time or status'}`);
+      continue;
+    }
+    const direction = istHourOf(at) < 13 ? 'to_college' : 'from_college';
+    const key = `${bus.id}|${istDayOf(at)}|${direction}`;
+    if (!groups.has(key)) groups.set(key, { bus, direction, note: `imported ${istDayOf(at)} ${direction}`, rows: [] });
+    groups.get(key).rows.push({ at, student: st, status });
+  }
+  for (const g of groups.values()) {
+    g.rows.sort((a, b) => a.at - b.at);
+    const first = g.rows[0].at;
+    const last = g.rows[g.rows.length - 1].at;
+    const inchargeId = incharges.find((u) => u.bus_id === g.bus.id)?.id ?? actorId;
+    let trip = await get("SELECT id FROM trips WHERE bus_id = ? AND note = ? AND status = 'ended'", g.bus.id, g.note);
+    if (!trip) {
+      const id = (await run(
+        'INSERT INTO trips(bus_id, incharge_id, direction, secret, status, started_at, ended_at, ended_by, note) VALUES(?,?,?,?,?,?,?,?,?)',
+        g.bus.id, inchargeId, g.direction, randomId(32), 'ended', first, last, actorId, g.note,
+      )).lastInsertRowid;
+      trip = { id };
+      out.trips++;
+    }
+    const stmts = [];
+    for (const r of g.rows) {
+      if (r.status === 'VERIFIED') {
+        stmts.push(["INSERT OR IGNORE INTO checkins(trip_id, student_id, device_id, ip, method, flags, created_at) VALUES(?, ?, NULL, NULL, 'qr', 'imported', ?)", trip.id, r.student.id, r.at]);
+      } else {
+        stmts.push(['INSERT INTO duplicates(trip_id, student_id, device_id, created_at) SELECT ?, ?, NULL, ? WHERE NOT EXISTS (SELECT 1 FROM duplicates WHERE trip_id = ? AND student_id = ? AND created_at = ?)', trip.id, r.student.id, r.at, trip.id, r.student.id, r.at]);
+      }
+    }
+    const results = await batchChunks(stmts);
+    g.rows.forEach((r, i) => { if (results[i]?.changes) out[r.status === 'VERIFIED' ? 'verified' : 'duplicates']++; });
+    // keep the trip's time span covering everything imported into it
+    await run('UPDATE trips SET started_at = MIN(started_at, ?), ended_at = MAX(COALESCE(ended_at, 0), ?) WHERE id = ?', first, last, trip.id);
+  }
   return out;
 }
 

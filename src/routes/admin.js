@@ -10,7 +10,7 @@ import { hashPassword, generatePassword, passwordProblem, normUuid, sealPassword
 const viewCopy = (role, password) => (role === 'admin' ? null : sealPassword(password, config.sessionSecret));
 import { audit } from '../services/audit.js';
 import { parseCsv, toCsv } from '../services/csv.js';
-import { importStudents, importBuses, importIncharges } from '../services/importer.js';
+import { importStudents, importBuses, importIncharges, importVerifications } from '../services/importer.js';
 import { tripSummary, listTrips, activeTrips, endTrip } from '../services/trips.js';
 import { clientCount } from '../services/events.js';
 import { baseUrl, qrMode, setQrMode } from '../services/qr.js';
@@ -267,14 +267,17 @@ router.post('/import/workbook', async (req, res) => {
     buses: z.array(z.object({ number: z.any(), route: z.any().optional(), active: z.any().optional() })).max(500).default([]),
     incharges: z.array(z.object({ id: z.any(), name: z.any().optional(), bus: z.any().optional(), active: z.any().optional(), role: z.any().optional() })).max(500).default([]),
     students: sheetRows.default([]),
+    verifications: z.array(z.object({ uuid: z.any(), bus: z.any(), status: z.any(), at: z.number() })).max(50_000).default([]),
   }), req.body);
   const buses = await importBuses(d.buses);
   const incharges = await importIncharges(d.incharges);
   const students = d.students.length > 1 ? await importStudents(d.students) : null;
+  // history last: it needs the students and buses above
+  const verifications = d.verifications.length ? await importVerifications(d.verifications, req.user.id) : null;
   await audit(req, 'workbook.import', 'student', null,
-    `buses ${buses.created} new/${buses.updated} updated; bus admins ${incharges.created.length} new/${incharges.updated} updated; students ${students ? `${students.inserted} new/${students.updated} updated` : 'none'}`);
+    `buses ${buses.created} new/${buses.updated} updated; bus admins ${incharges.created.length} new/${incharges.updated} updated; students ${students ? `${students.inserted} new/${students.updated} updated` : 'none'}; history ${verifications ? `${verifications.verified} verifications, ${verifications.duplicates} duplicates in ${verifications.trips} new trips` : 'none'}`);
   res.set('Cache-Control', 'no-store');
-  res.json({ buses, incharges, students });
+  res.json({ buses, incharges, students, verifications });
 });
 
 

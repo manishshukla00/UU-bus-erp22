@@ -31,4 +31,5 @@ export const FLAG_INFO = {
   new_device: ['pill-warn', 'New phone', 'Verified from a phone not used before'],
   wrong_bus: ['pill-warn', 'Other bus', 'Student is assigned to a different bus'],
   manual: ['', 'Manual', 'Marked by staff, not by QR scan'],
+  imported: ['pill-muted', 'Imported', 'Verified in the previous (Apps Script) system and imported from the workbook'],
 };
