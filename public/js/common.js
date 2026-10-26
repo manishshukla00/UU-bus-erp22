@@ -276,7 +276,7 @@ export function pwInput(name, { placeholder = '', autocomplete = 'new-password',
   return `<div class="input-wrap"><input class="input" ${id ? `id="${id}" ` : ''}name="${name}" type="password" autocomplete="${autocomplete}" spellcheck="false" autocapitalize="off"${required ? ' required' : ''}${minlength ? ` minlength="${minlength}"` : ''} placeholder="${esc(placeholder)}"><button class="btn icon" type="button" data-eye aria-label="Show password" title="Show password">${ICONS.eye}</button></div>`;
 }
 export function wireEyes(root = document) {
-  $('[data-eye]', root).forEach((b) => {
+  $$('[data-eye]', root).forEach((b) => {
     if (b.dataset.wired) return;
     b.dataset.wired = '1';
     b.addEventListener('click', () => {
@@ -296,7 +296,7 @@ export function passwordChangeForm({ forced = false } = {}) {
     const m = modal({
       title: forced ? 'Set a new password' : 'Change password',
       body: `
-        <form id="pwForm" class="stack" autocomplete="off">
+        <form id="pwForm" class="stack" method="post" autocomplete="off">
           ${forced ? '<p class="muted small">For security you must replace the temporary password before continuing.</p>' : ''}
           <div class="field"><label>Current password</label>${pwInput('current', { autocomplete: 'current-password', required: true })}</div>
           <div class="field"><label>New password</label>${pwInput('next', { minlength: 10, required: true })}<div class="help">At least 10 characters with letters and numbers.</div></div>

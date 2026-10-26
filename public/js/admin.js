@@ -513,7 +513,7 @@ function setPasswordDialog(u) {
   const m = modal({
     title: `Set password for ${u.name}`,
     body: `
-      <form id="pwSetForm" class="stack" autocomplete="off">
+      <form id="pwSetForm" class="stack" method="post" autocomplete="off">
         <p class="small muted">${u.role === 'admin' ? 'They will be asked to choose their own password at next sign-in.' : `${roleLabel(u.role)}s cannot change their own password, so this is the password they will use.`} They are signed out on every device.</p>
         <div class="field"><label>New password</label>${pwInput('password', { minlength: 10, placeholder: 'Leave empty to generate one' })}<div class="help">At least 10 characters with letters and numbers.${u.role === 'admin' ? '' : ' You can look it up later with the eye button.'}</div></div>
         <div class="error-text" data-error hidden></div>
@@ -547,7 +547,7 @@ function userForm(u, buses) {
   const m = modal({
     title: u ? `Edit ${u.name}` : 'Add staff',
     body: `
-      <form id="userForm" class="stack" autocomplete="off">
+      <form id="userForm" class="stack" method="post" autocomplete="off">
         <div class="grid cols-2">
           <div class="field"><label>Full name</label><input class="input" name="name" value="${esc(u?.name || '')}" required maxlength="80"></div>
           <div class="field"><label>Username</label><input class="input mono" name="username" value="${esc(u?.username || '')}" required minlength="3" maxlength="32" autocapitalize="off"></div>
