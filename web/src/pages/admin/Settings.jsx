@@ -29,7 +29,7 @@ export default function Settings() {
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
           {modes.map(([k, title, text]) => (
             <button key={k} disabled={savingMode} onClick={() => data.qrMode !== k && setMode(k)}
-              className={`rounded-xl border-2 p-4 text-left transition ${data.qrMode === k ? 'border-brand bg-brand-soft' : 'border-line hover:border-brand/50'}`}>
+              className={`rounded-2xl border-2 p-4 text-left transition-all duration-200 hover:-translate-y-0.5 ${data.qrMode === k ? 'border-brand bg-brand-soft shadow-[var(--shadow-lift)]' : 'border-line hover:border-brand/50'}`}>
               <div className="flex items-center justify-between font-bold text-navy">{title}{data.qrMode === k && <span className="pill">Active</span>}</div>
               <p className="mt-2 text-xs text-muted">{text}</p>
             </button>

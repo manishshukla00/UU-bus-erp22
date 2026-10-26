@@ -1,4 +1,5 @@
 import { createContext, use, useCallback, useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Icon } from './Icon.jsx';
 import { FLAG_INFO } from '../lib/format.js';
 
@@ -20,7 +21,7 @@ export function ToastProvider({ children }) {
       {children}
       <div className="pointer-events-none fixed inset-x-0 bottom-4 z-[60] flex flex-col items-center gap-2 px-4" aria-live="polite">
         {items.map((t) => (
-          <div key={t.id} className={`pointer-events-auto flex max-w-md items-start gap-2 rounded-xl border-l-4 bg-white px-4 py-3 text-sm shadow-pop animate-slide ${tone[t.type]}`}>
+          <div key={t.id} className={`pointer-events-auto flex max-w-md items-start gap-2.5 rounded-2xl border border-l-4 border-line bg-white/95 px-4 py-3 text-sm font-medium shadow-pop backdrop-blur animate-slide ${tone[t.type]}`}>
             <Icon name={icon[t.type]} className={`mt-0.5 size-4 shrink-0 ${t.type === 'success' ? 'text-ok' : t.type === 'error' ? 'text-uured' : 'text-brand'}`} />
             <div>{t.message}</div>
           </div>
@@ -41,18 +42,20 @@ export function Modal({ title, onClose, children, footer, wide = false, closable
     setTimeout(() => first?.focus(), 30);
     return () => { document.removeEventListener('keydown', onKey); prev?.focus?.(); };
   }, [onClose, closable]);
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-navy/45 p-0 animate-fade sm:items-center sm:p-4"
+  // rendered straight into <body>, so no transformed or animated ancestor can trap the overlay
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-navy/40 p-0 backdrop-blur-[2px] animate-fade sm:items-center sm:p-4"
       onMouseDown={(e) => { if (e.target === e.currentTarget && closable) onClose?.(); }} role="dialog" aria-modal="true" aria-label={title}>
-      <div ref={ref} className={`flex max-h-[92vh] w-full flex-col rounded-t-2xl bg-white shadow-pop animate-pop sm:rounded-2xl ${wide ? 'sm:max-w-3xl' : 'sm:max-w-lg'}`}>
-        <header className="flex items-center justify-between gap-3 border-b border-line px-5 py-4">
+      <div ref={ref} className={`flex max-h-[92vh] w-full flex-col rounded-t-3xl border border-line bg-white shadow-pop animate-pop sm:rounded-3xl ${wide ? 'sm:max-w-3xl' : 'sm:max-w-lg'}`}>
+        <header className="flex items-center justify-between gap-3 border-b border-line px-6 py-4">
           <h2 className="text-lg font-bold text-navy">{title}</h2>
           {closable && <button className="btn btn-ghost btn-icon" onClick={onClose} aria-label="Close"><Icon name="x" /></button>}
         </header>
-        <div className="overflow-y-auto px-5 py-4">{children}</div>
-        {footer && <footer className="flex flex-wrap justify-end gap-2 border-t border-line px-5 py-3">{footer}</footer>}
+        <div className="overflow-y-auto px-6 py-5">{children}</div>
+        {footer && <footer className="flex flex-wrap justify-end gap-2 rounded-b-3xl border-t border-line bg-page/50 px-6 py-3.5">{footer}</footer>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -102,7 +105,7 @@ export function PasswordInput({ name, autoComplete = 'new-password', required, m
 
 export function ErrorText({ children }) {
   if (!children) return null;
-  return <div className="rounded-lg bg-uured-soft px-3 py-2.5 text-sm font-medium text-uured" role="alert">{children}</div>;
+  return <div className="flex items-start gap-2 rounded-xl border border-uured/15 bg-uured-soft px-3.5 py-2.5 text-sm font-medium text-uured animate-slide" role="alert"><Icon name="alert" className="mt-0.5 size-4 shrink-0" />{children}</div>;
 }
 
 export function Spinner({ className = 'size-5' }) {
@@ -116,25 +119,33 @@ export function SubmitButton({ pending, children, className = 'btn btn-primary' 
 /* ------------------------------------------------------------------ display */
 export function Empty({ icon = 'info', children }) {
   return (
-    <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-muted">
-      <Icon name={icon} className="size-9 text-line" strokeWidth={1.5} />
-      <div>{children}</div>
+    <div className="flex flex-col items-center gap-3 px-4 py-12 text-center text-sm text-muted animate-fade">
+      <span className="flex size-14 items-center justify-center rounded-2xl bg-brand-soft text-brand/60"><Icon name={icon} className="size-7" strokeWidth={1.6} /></span>
+      <div className="max-w-sm">{children}</div>
     </div>
   );
 }
 
+/** Placeholder blocks shaped like the page while it loads (feels quicker than a spinner). */
 export function Loading({ label = 'Loading…' }) {
-  return <div className="flex items-center justify-center gap-3 py-16 text-sm text-muted"><Spinner />{label}</div>;
+  return (
+    <div className="flex flex-col gap-4 py-2 animate-fade" role="status" aria-label={label}>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[0, 1, 2, 3].map((i) => <div key={i} className="skeleton h-24" />)}</div>
+      <div className="skeleton h-40" />
+      <div className="skeleton h-64" />
+      <span className="sr-only">{label}</span>
+    </div>
+  );
 }
 
 export function Stat({ label, value, sub, tone = 'brand', icon }) {
   const color = { brand: 'text-brand', ok: 'text-ok', red: 'text-uured', warn: 'text-warn', navy: 'text-navy' }[tone];
   return (
-    <div className="card p-4">
-      <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-muted">
-        <span>{label}</span>{icon && <Icon name={icon} className={`size-4 ${color}`} />}
+    <div className="card card-hover relative overflow-hidden p-4">
+      <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-muted">
+        <span>{label}</span>{icon && <span className={`flex size-8 items-center justify-center rounded-xl bg-page ${color}`}><Icon name={icon} className="size-4" /></span>}
       </div>
-      <div className={`mt-2 text-3xl font-extrabold tabular-nums ${color}`}>{value}</div>
+      <div key={value} className={`mt-1 text-3xl font-extrabold tabular-nums animate-pop ${color}`}>{value}</div>
       {sub && <div className="mt-1 text-xs text-muted">{sub}</div>}
     </div>
   );
@@ -143,7 +154,7 @@ export function Stat({ label, value, sub, tone = 'brand', icon }) {
 export function LiveBadge({ ok }) {
   return (
     <span className={`pill ${ok ? 'pill-ok' : 'pill-muted'}`}>
-      <span className={`size-2 rounded-full ${ok ? 'bg-ok animate-pulse' : 'bg-uured'}`} />{ok ? 'Live' : 'Connecting'}
+      <span className={ok ? 'live-dot text-ok' : 'size-2 rounded-full bg-uured'} />{ok ? 'Live' : 'Connecting'}
     </span>
   );
 }

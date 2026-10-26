@@ -33,7 +33,7 @@ export default function Login() {
   return (
     <div className="min-h-dvh">
       <BrandHeader />
-      <main className="mx-auto my-6 grid w-[min(1100px,94%)] gap-[18px] md:grid-cols-2">
+      <main className="stagger mx-auto my-6 grid w-[min(1100px,94%)] grid-cols-1 gap-[18px] md:grid-cols-2">
         <section className="card p-[22px]">
           <h2 className="text-xl font-bold text-navy">Admin / Incharge Login</h2>
           <p className="mt-2 text-muted">Enter your assigned Login ID and password.</p>

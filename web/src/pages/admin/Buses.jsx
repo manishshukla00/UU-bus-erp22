@@ -35,9 +35,9 @@ export default function Buses() {
         {!ro && <button className="btn btn-primary" onClick={() => setEdit({})}><Icon name="plus" className="size-4" />Add bus</button>}
       </div>
       {data.buses.length ? (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="stagger grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {data.buses.map((b) => (
-            <div key={b.id} className={`card flex flex-col gap-3 p-5 ${b.active ? '' : 'opacity-60'}`}>
+            <div key={b.id} className={`card card-hover flex flex-col gap-3 p-5 ${b.active ? '' : 'opacity-60'}`}>
               <div className="flex items-start gap-3">
                 <span className="flex h-11 min-w-11 items-center justify-center rounded-xl bg-brand px-2 text-sm font-extrabold text-white">{b.number}</span>
                 <div className="min-w-0 grow">

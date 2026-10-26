@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { flushSync } from 'react-dom';
 
 /*
  * A tiny router: the app has a handful of top-level pages (/login, /admin, /incharge, /bus/:n,
@@ -20,9 +21,15 @@ export function useLocation() {
 
 export function navigate(to, { replace = false } = {}) {
   if (to === snapshot()) return;
-  history[replace ? 'replaceState' : 'pushState'](null, '', to);
-  notify();
-  window.scrollTo(0, 0);
+  const go = (sync) => {
+    history[replace ? 'replaceState' : 'pushState'](null, '', to);
+    if (sync) flushSync(notify); else notify();
+    window.scrollTo(0, 0);
+  };
+  // a short native cross-fade between pages where the browser supports it (no JavaScript animation);
+  // redirects (replace) switch at once
+  if (!replace && document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) document.startViewTransition(() => go(true));
+  else go(false);
 }
 
 /** <a> that navigates without a page load (plain clicks only; ctrl/middle-click open a new tab). */

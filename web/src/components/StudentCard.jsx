@@ -26,8 +26,8 @@ export function StudentCard({ student, busNumber, verifiedAt, already = false, d
         <p className="my-2 break-words"><strong>Route:</strong> {student.stop || '—'}</p>
         <p className="my-2 break-words"><strong>Enrollment No.:</strong> {student.enrollment_no || student.uuid || '—'}</p>
         {already
-          ? <div className="mt-4 inline-block rounded-full bg-warn-soft px-4 py-2 font-bold text-warn">✓ ALREADY VERIFIED</div>
-          : <div className="mt-4 inline-block rounded-full bg-ok-soft px-4 py-2 font-bold text-ok">✓ VERIFIED</div>}
+          ? <div className="check-pop mt-4 inline-block rounded-full bg-warn-soft px-4 py-2 font-bold text-warn [animation-delay:200ms]">✓ ALREADY VERIFIED</div>
+          : <div className="check-pop mt-4 inline-block rounded-full bg-ok-soft px-4 py-2 font-bold text-ok [animation-delay:200ms]">✓ VERIFIED</div>}
         {verifiedAt && (
           <p className="mt-2 text-sm text-muted">
             {fmtDate(verifiedAt)}, {fmtTimeSec(verifiedAt)}{direction ? ` · ${directionLabel(direction)}` : ''}

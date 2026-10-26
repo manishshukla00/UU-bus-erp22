@@ -39,7 +39,7 @@ export default function Portal() {
           </div>
         )} />
       )}
-      <main className={kiosk ? 'p-4' : 'mx-auto max-w-7xl p-4 sm:p-6'}>
+      <main className={kiosk ? 'p-4' : 'mx-auto max-w-7xl p-4 page-enter sm:p-6'}>
         {user.mustChangePassword ? null : busNo
           ? <BusPortal key={busNo} busNo={busNo} live={live} kiosk={kiosk} setKiosk={setKiosk} />
           : <Picker live={live} />}
@@ -65,7 +65,7 @@ function Picker({ live }) {
         <div className="flex gap-2"><span className="pill">{data.buses.length} buses</span><span className={`pill ${running ? 'pill-ok' : 'pill-muted'}`}>{running} running</span></div>
       </div>
       {data.buses.length ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="stagger grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {data.buses.map((b) => (
             <Link key={b.id} to={`/bus/${encodeURIComponent(b.number)}`} className="card flex flex-col gap-3 p-4 transition hover:border-brand">
               <div className="flex items-center gap-3">
@@ -134,7 +134,7 @@ function StartTrip({ bus, onStarted }) {
             <p className="mt-5 text-sm font-bold">Which trip is this?</p>
             <div className="mt-2 grid grid-cols-2 gap-3">
               {[['to_college', 'Morning', 'To college', 'school'], ['from_college', 'Evening', 'From college', 'home']].map(([k, title, sub, ic]) => (
-                <button key={k} onClick={() => setDirection(k)} className={`flex flex-col items-center gap-1 rounded-xl border-2 p-4 transition ${direction === k ? 'border-brand bg-brand-soft text-brand' : 'border-line text-muted hover:border-brand/50'}`}>
+                <button key={k} onClick={() => setDirection(k)} className={`flex flex-col items-center gap-1 rounded-2xl border-2 p-4 transition-all duration-200 active:scale-[0.98] ${direction === k ? 'border-brand bg-brand-soft text-brand shadow-[var(--shadow-lift)]' : 'border-line text-muted hover:-translate-y-0.5 hover:border-brand/50'}`}>
                   <Icon name={ic} className="size-7" /><span className="font-bold text-ink">{title}</span><span className="text-xs">{sub}</span>
                 </button>
               ))}
@@ -232,7 +232,7 @@ function TripLive({ tripId, bus, live, kiosk, setKiosk, onEnded }) {
             <span key={bump} className="text-6xl font-extrabold tabular-nums text-ok animate-pop">{counts.boarded}</span>
             <span className="pb-2 text-muted">of {counts.expected} students verified</span>
           </div>
-          <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-line"><div className="h-full rounded-full bg-ok transition-all duration-500" style={{ width: `${pct}%` }} /></div>
+          <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-line"><div className="h-full rounded-full bg-[linear-gradient(90deg,#1ea865,var(--color-ok))] transition-[width] duration-700 ease-[var(--ease-out)]" style={{ width: `${pct}%` }} /></div>
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
             <span>{directionLabel(trip.direction)} · started {fmtTime(trip.started_at)}</span>
             {counts.duplicates > 0 && <span className="pill pill-warn">{counts.duplicates} duplicate scans</span>}
@@ -262,14 +262,14 @@ function TripLive({ tripId, bus, live, kiosk, setKiosk, onEnded }) {
             <h3 className="grow font-bold text-navy">Students on Bus {trip.bus_number}</h3>
             <div className="flex rounded-lg bg-page p-1 text-xs font-semibold">
               {[['all', `All ${done.length + pending.length}`], ['done', `Verified ${done.length}`], ['pending', `Not yet ${pending.length}`]].map(([k, label]) => (
-                <button key={k} onClick={() => setFilter(k)} className={`rounded-md px-2.5 py-1.5 ${filter === k ? 'bg-white text-brand shadow-sm' : 'text-muted'}`}>{label}</button>
+                <button key={k} onClick={() => setFilter(k)} className={`rounded-md px-2.5 py-1.5 transition-all duration-200 ${filter === k ? 'bg-white text-brand shadow-sm' : 'text-muted hover:text-ink'}`}>{label}</button>
               ))}
             </div>
             {!kiosk && <input className="input mt-1 py-2" placeholder="Find by name, UUID or route" value={q} onChange={(e) => setQ(e.target.value)} />}
           </div>
           <ul className="max-h-[60vh] divide-y divide-line overflow-y-auto">
             {rows.length ? rows.map((r) => (
-              <li key={`${r.at ? 'd' : 'p'}${r.id}`} className={`flex items-center gap-3 px-4 py-2.5 ${r.checkinId && r.checkinId === fresh?.id ? 'bg-ok-soft' : ''}`}>
+              <li key={`${r.at ? 'd' : 'p'}${r.id}`} className={`flex items-center gap-3 px-4 py-2.5 transition-colors duration-500 hover:bg-brand-soft/50 ${r.checkinId && r.checkinId === fresh?.id ? 'bg-ok-soft' : ''}`}>
                 <Avatar src={r.photo_url} name={r.name} className="size-9 text-xs" />
                 <div className="min-w-0 grow">
                   <div className="truncate text-sm font-semibold">{r.name} <span className="font-mono text-xs font-normal text-muted">{r.uuid}</span></div>
@@ -347,13 +347,13 @@ function QrPanel({ trip, kiosk, setKiosk, sound, setSound }) {
       </div>
       <p className={`mt-4 font-bold text-navy ${kiosk ? 'text-3xl' : 'text-xl'}`}>Scan to verify</p>
       <p className="text-sm text-muted">Open the phone camera, scan, enter your UUID or enrollment number.</p>
-      <div className={`relative mt-4 aspect-square w-full rounded-2xl border border-line bg-white p-4 ${kiosk ? 'max-w-[min(78vh,640px)]' : 'max-w-[340px]'}`}>
+      <div className={`relative mt-4 aspect-square w-full rounded-3xl border border-line bg-white p-4 shadow-[var(--shadow-lift)] animate-pop ${kiosk ? 'max-w-[min(78vh,640px)]' : 'max-w-[340px]'}`}>
         {qr ? <div className="size-full [&>svg]:size-full" dangerouslySetInnerHTML={{ __html: qr.svg }} /> : <div className="flex size-full items-center justify-center"><Spinner className="size-8 text-brand" /></div>}
         {err && <div className="absolute inset-0 flex items-center justify-center rounded-2xl bg-white/90 p-4 text-sm font-semibold text-uured">{err}</div>}
       </div>
       {qr?.mode === 'rotating' ? (
         <div className="mt-3 w-full max-w-[340px]">
-          <div className="h-1.5 overflow-hidden rounded-full bg-line"><div className="h-full bg-brand transition-all duration-1000 ease-linear" style={{ width: `${(left / qr.rotateSec) * 100}%` }} /></div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-line"><div className="h-full rounded-full bg-[linear-gradient(90deg,var(--color-brand-light),var(--color-brand))] transition-[width] duration-1000 ease-linear" style={{ width: `${(left / qr.rotateSec) * 100}%` }} /></div>
           <p className="mt-1 text-xs text-muted">New code in {left}s</p>
         </div>
       ) : qr ? <p className="mt-3 text-xs text-muted">Valid all day (until midnight). The same code works for every trip today.</p> : null}

@@ -40,8 +40,8 @@ export default function AdminApp() {
 
   return (
     <div className="min-h-dvh lg:grid lg:grid-cols-[260px_1fr]">
-      {menu && <div className="fixed inset-0 z-30 bg-navy/40 lg:hidden" onClick={() => setMenu(false)} />}
-      <aside className={`fixed inset-y-0 left-0 z-40 flex w-[260px] flex-col border-r border-line bg-white transition-transform lg:sticky lg:top-0 lg:h-dvh lg:translate-x-0 ${menu ? 'translate-x-0' : '-translate-x-full'}`}>
+      {menu && <div className="fixed inset-0 z-30 bg-navy/40 backdrop-blur-[2px] animate-fade lg:hidden" onClick={() => setMenu(false)} />}
+      <aside className={`fixed inset-y-0 left-0 z-40 flex w-[260px] flex-col border-r border-line bg-white/95 backdrop-blur transition-transform duration-300 ease-[var(--ease-out)] lg:sticky lg:top-0 lg:h-dvh lg:translate-x-0 ${menu ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="flex items-center gap-3 bg-[linear-gradient(110deg,var(--color-navy),var(--color-brand))] px-4 py-4 text-white">
           <img src="/img/uu-crest.png" alt="" width="44" height="44" className="size-11 rounded-lg bg-white p-1" />
           <div><div className="font-bold leading-tight">United University</div><div className="text-xs opacity-90">Transport console</div></div>
@@ -49,11 +49,11 @@ export default function AdminApp() {
         <nav className="flex grow flex-col gap-0.5 overflow-y-auto p-3">
           {pages.map((p) => (
             <a key={p.key} href={`#${p.key}`} onClick={() => setMenu(false)}
-              className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold transition ${p.key === page.key ? 'bg-brand text-white' : 'text-ink hover:bg-brand-soft hover:text-brand'}`}>
-              <Icon name={p.icon} className="size-[18px]" />{p.title}
+              className={`group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition-all duration-200 ${p.key === page.key ? 'bg-[linear-gradient(135deg,var(--color-brand-light),var(--color-brand))] text-white shadow-[0_8px_18px_-8px_rgb(11_78_162/0.7)]' : 'text-ink hover:translate-x-0.5 hover:bg-brand-soft hover:text-brand'}`}>
+              <Icon name={p.icon} className="size-[18px] transition-transform duration-200 group-hover:scale-110" />{p.title}
             </a>
           ))}
-          <Link to="/incharge" className="mt-2 flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold text-ink hover:bg-brand-soft hover:text-brand">
+          <Link to="/incharge" className="group mt-2 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-ink transition-all duration-200 hover:translate-x-0.5 hover:bg-brand-soft hover:text-brand">
             <Icon name="qr" className="size-[18px]" />Bus portals
           </Link>
         </nav>
@@ -70,14 +70,14 @@ export default function AdminApp() {
       </aside>
 
       <div className="min-w-0">
-        <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-line bg-white/90 px-4 py-3 backdrop-blur sm:px-6">
+        <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-line/80 bg-white/75 px-4 py-3 backdrop-blur-md backdrop-saturate-150 sm:px-6">
           <button className="btn btn-ghost btn-icon lg:hidden" onClick={() => setMenu(true)} aria-label="Menu"><Icon name="menu" /></button>
-          <h1 className="grow truncate text-xl font-bold text-navy">{page.title}</h1>
+          <h1 key={page.key} className="grow truncate text-xl font-bold text-navy animate-fade">{page.title}</h1>
           {user.readOnly && <span className="pill pill-muted">Read-only</span>}
         </header>
         <main className="mx-auto max-w-7xl p-4 sm:p-6">
           {/* nothing loads until a temporary password is replaced (the API refuses it anyway) */}
-          {!user.mustChangePassword && <Suspense fallback={<Loading />}><Page key={page.key} /></Suspense>}
+          {!user.mustChangePassword && <div key={page.key} className="page-enter"><Suspense fallback={<Loading />}><Page /></Suspense></div>}
         </main>
       </div>
 

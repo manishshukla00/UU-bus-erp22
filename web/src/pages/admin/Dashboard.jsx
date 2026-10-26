@@ -60,7 +60,7 @@ export default function Dashboard() {
         <button className="btn btn-sm" onClick={reload}><Icon name="refresh" className="size-4" />Refresh</button>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="stagger grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label={isToday ? 'Verified today' : 'Verified'} value={totals.verified} sub={`of ${totals.students} active students · ${pct}%`} tone="ok" icon="checkCircle" />
         <Stat label="Boardings" value={totals.boardings} sub="all trips, morning and evening" icon="bus" />
         <Stat label="Duplicates" value={totals.duplicates} sub="repeat scans, already verified" tone={totals.duplicates ? 'warn' : 'navy'} icon="repeat" />
@@ -73,19 +73,19 @@ export default function Dashboard() {
           {bus && <button className="btn btn-sm" onClick={() => setBus('')}><Icon name="x" className="size-4" />Show all buses</button>}
         </div>
         {buses.length ? (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="stagger grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {buses.map((b) => {
               const p = b.students ? Math.min(100, Math.round((b.verified / b.students) * 100)) : 0;
               return (
                 <button key={b.id} onClick={() => setBus(bus === b.number ? '' : b.number)}
-                  className={`rounded-xl border p-4 text-left transition hover:border-brand ${bus === b.number ? 'border-brand bg-brand-soft' : 'border-line bg-[#f7faff]'}`}>
+                  className={`rounded-2xl border p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-brand/40 hover:shadow-[var(--shadow-lift)] active:translate-y-0 ${bus === b.number ? 'border-brand bg-brand-soft shadow-[var(--shadow-lift)]' : 'border-line bg-[#f7faff]'}`}>
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-bold text-navy">{b.number}</span>
-                    {b.live_trip ? <span className="pill pill-ok"><span className="size-1.5 rounded-full bg-ok animate-pulse" />{directionLabel(b.live_direction)}</span> : <span className="pill pill-muted">No trip</span>}
+                    {b.live_trip ? <span className="pill pill-ok"><span className="live-dot size-1.5" />{directionLabel(b.live_direction)}</span> : <span className="pill pill-muted">No trip</span>}
                   </div>
                   <div className="my-2 text-3xl font-extrabold tabular-nums text-brand">{b.verified}</div>
                   <div className="text-xs text-muted">Verified of {b.students} active students</div>
-                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line"><div className="h-full rounded-full bg-ok transition-all" style={{ width: `${p}%` }} /></div>
+                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line"><div className="h-full rounded-full bg-[linear-gradient(90deg,#1ea865,var(--color-ok))] transition-[width] duration-700 ease-[var(--ease-out)]" style={{ width: `${p}%` }} /></div>
                   <div className="mt-2 flex justify-between text-xs text-muted">
                     <span>Duplicates: <b className={b.duplicates ? 'text-warn' : ''}>{b.duplicates}</b></span>
                     <span className="truncate pl-2" title={b.route}>{b.route}</span>

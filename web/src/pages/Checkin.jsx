@@ -58,7 +58,7 @@ export default function Checkin() {
   return (
     <div className="min-h-dvh">
       <BrandHeader />
-      <main className="mx-auto my-6 w-[min(560px,94%)]">
+      <main className="mx-auto my-6 w-[min(560px,94%)] page-enter">
         {phase.name === 'loading' && <Loading label="Opening verification…" />}
         {phase.name === 'form' && <VerifyForm trip={phase.trip} expiresAt={phase.expiresAt} onDone={onDone} onExpired={onExpired} />}
         {phase.name === 'selfie' && <Selfie {...phase} onDone={onDone} onExpired={onExpired} />}
@@ -213,7 +213,7 @@ function Selfie({ trip, student, id, onDone, onExpired }) {
 function Done({ trip, student, boardedAt, already }) {
   return (
     <div className="flex flex-col gap-4">
-      <div className={`rounded-lg px-3 py-3 text-sm font-semibold ${already ? 'bg-warn-soft text-warn' : 'bg-ok-soft text-ok'}`} role="status">
+      <div className={`rounded-xl px-3.5 py-3 text-sm font-semibold animate-slide ${already ? 'bg-warn-soft text-warn' : 'bg-ok-soft text-ok'}`} role="status">
         {already ? 'Already verified on this trip. Show this screen to the incharge if asked.' : 'Student verified successfully.'}
       </div>
       <StudentCard student={student} busNumber={trip?.bus_number} verifiedAt={boardedAt} already={already} direction={trip?.direction} />

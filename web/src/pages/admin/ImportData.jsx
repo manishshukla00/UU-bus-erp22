@@ -75,8 +75,8 @@ export default function ImportData() {
           Existing buses, accounts and students (same bus number, Login ID or UUID) are updated, never duplicated. PIN hashes from the sheet are not used:
           each new incharge account gets a fresh password, shown once below.
         </p>
-        <label className="mt-5 flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed border-line bg-page px-6 py-8 text-center transition hover:border-brand">
-          <Icon name="file" className="size-9 text-brand" />
+        <label className="group mt-5 flex cursor-pointer flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-line bg-page px-6 py-8 text-center transition-all duration-200 hover:border-brand hover:bg-brand-soft">
+          <Icon name="file" className="size-9 text-brand transition-transform duration-300 group-hover:-translate-y-1" />
           <span className="font-semibold">{fileName || 'Choose Excel workbook'}</span>
           <span className="text-xs text-muted">.xlsx · read on this device until you press Import</span>
           <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
@@ -96,7 +96,7 @@ export default function ImportData() {
               </select>
             </label>
           </div>
-          <div className="mt-4 grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
+          <div className="stagger mt-4 grid grid-cols-2 gap-3 text-center sm:grid-cols-4">
             <Count n={sel.buses.length} label="buses" />
             <Count n={sel.incharges.length} label="incharge accounts" />
             <Count n={studentRows} label="students" />
