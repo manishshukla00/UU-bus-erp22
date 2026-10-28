@@ -8,6 +8,7 @@ import { HttpError, intParam } from './http.js';
 import { loadSession, requireAuth } from './middleware/auth.js';
 import { apiLimiter } from './middleware/rateLimit.js';
 import { subscribe, pollEvents } from './services/events.js';
+import { autoEndStaleTrips } from './services/trips.js';
 import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
 import inchargeRoutes from './routes/incharge.js';
@@ -83,6 +84,7 @@ function setupPage(res, title, items) {
 }
 
 let lastCleanup = 0;
+let lastTripSweep = 0;
 app.use(async (req, res, next) => {
   if (config.problems.length) {
     if (req.path.startsWith('/api/')) return res.status(503).json({ error: 'Server is not configured yet', problems: config.problems });
@@ -100,6 +102,11 @@ app.use(async (req, res, next) => {
   if (Date.now() - lastCleanup > 10 * 60_000) {
     lastCleanup = Date.now();
     cleanup().catch((e) => console.error('cleanup failed', e));
+  }
+  // end trips left running too long (at most once a minute per instance; awaited so it completes on serverless)
+  if (req.path.startsWith('/api/') && Date.now() - lastTripSweep > 60_000) {
+    lastTripSweep = Date.now();
+    try { await autoEndStaleTrips(); } catch (e) { console.error('trip sweep failed', e); }
   }
   next();
 });

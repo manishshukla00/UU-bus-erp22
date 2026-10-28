@@ -2,6 +2,7 @@ import { all, get, read, batch, now } from '../db.js';
 import { randomId } from '../security.js';
 import { HttpError } from '../http.js';
 import { broadcast, tripScope } from './events.js';
+import { config } from '../config.js';
 
 const TRIP_COLS = `t.id, t.bus_id, t.incharge_id, t.direction, t.status, t.started_at, t.ended_at, t.note,
   b.number AS bus_number, b.name AS bus_name, b.route AS bus_route, u.name AS incharge_name`;
@@ -112,6 +113,39 @@ export async function endTrip(id, byUserId) {
   const trip = splitCounts(results[2].rows[0]);
   await broadcast('trip', { type: 'ended', trip }, tripScope(trip));
   return trip;
+}
+
+const IST_OFFSET_MS = 330 * 60_000;
+/** Epoch ms of the most recent midnight in India. */
+const istMidnight = (ms) => Math.floor((ms + IST_OFFSET_MS) / 86_400_000) * 86_400_000 - IST_OFFSET_MS;
+
+/**
+ * End every running trip that is older than TRIP_MAX_HOURS or started before today's midnight
+ * (India time), so a trip someone forgot to end never swallows the next one: the evening trip, or
+ * tomorrow morning's, always gets its own verifications instead of "already verified".
+ * The trip is closed at its time limit (or midnight), not at the moment this runs.
+ */
+export async function autoEndStaleTrips(ms = now()) {
+  const maxMs = config.tripMaxHours * 3_600_000;
+  const results = await batch([
+    // ended at the earliest of: its time limit, midnight (if it started before), now
+    [`UPDATE trips SET status = 'ended', ended_by = NULL,
+        ended_at = MIN(started_at + ?, CASE WHEN started_at < ? THEN ? ELSE ? END, ?)
+      WHERE status = 'active' AND (started_at < ? OR started_at < ?)
+      RETURNING id`, maxMs, istMidnight(ms), istMidnight(ms), ms, ms, ms - maxMs, istMidnight(ms)],
+  ]);
+  const ids = results[0].rows.map((r) => r.id);
+  if (!ids.length) return [];
+  const marks = ids.map(() => '?').join(',');
+  const [, ...rows] = await batch([
+    [`UPDATE checkin_sessions SET expires_at = ? WHERE trip_id IN (${marks}) AND consumed_at IS NULL`, ms, ...ids],
+    ...ids.map((id) => [`${TRIP_WITH_COUNTS} WHERE t.id = ?`, id]),
+  ]);
+  for (const r of rows) {
+    const trip = splitCounts(r.rows[0]);
+    if (trip) await broadcast('trip', { type: 'ended', trip, auto: true }, tripScope(trip));
+  }
+  return ids;
 }
 
 /**

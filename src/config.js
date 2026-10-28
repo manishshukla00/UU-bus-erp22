@@ -116,6 +116,8 @@ export const config = Object.freeze({
   qrModeDefault: ['trip', 'day', 'rotating'].includes(env.QR_MODE) ? env.QR_MODE : 'trip',
   /** 'trip' mode: hours a trip's QR stays valid (Admin → Settings can change it). */
   qrTripHours: Math.min(12, Math.max(0.5, Number(env.QR_TRIP_HOURS) || 2)),
+  /** A running trip ends by itself after this many hours, and always at midnight (India time). */
+  tripMaxHours: Math.min(24, Math.max(1, Number(env.TRIP_MAX_HOURS) || 4)),
   qrRotateSec: Math.max(10, Number(env.QR_ROTATE_SECONDS) || 20),
   qrGraceSlots: Math.max(0, Number(env.QR_GRACE_SLOTS ?? 1)),
   checkinTtlMs: (Number(env.CHECKIN_MINUTES) || 5) * 60_000,

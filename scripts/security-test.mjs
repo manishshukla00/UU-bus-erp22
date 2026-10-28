@@ -7,6 +7,7 @@
  * incharge account. Uses bus 12 of the seeded fleet. Safe to re-run.
  */
 import { tokenFor, dayTokenFor } from '../src/services/qr.js';
+import { autoEndStaleTrips } from '../src/services/trips.js';
 import { get, run } from '../src/db.js';
 
 const BASE = (process.env.BASE || 'http://localhost:3000').replace(/\/+$/, '');
@@ -222,9 +223,10 @@ r = await call(jar(), 'POST', '/api/checkin/session', { token: tripTok.slice(0, 
 ok(r.status === 410, 'tampered trip QR -> 410', r.status);
 r = await call(jar(), 'POST', '/api/checkin/session', { token: `t${trip.id}.${Number(tripTok.split('.')[1]) + 1}.${tripTok.split('.')[2]}` });
 ok(r.status === 410, 'trip QR with a moved start time -> 410', r.status);
-// pretend the trip started 3 hours ago (the window starts at the trip start until "New QR code")
+// pretend the trip started 2.5 hours ago (the window starts at the trip start until "New QR code");
+// under the 4-hour trip limit, so the trip itself keeps running (run this test outside 00:00-02:30 India time)
 const realStart = (await get('SELECT started_at FROM trips WHERE id = ?', trip.id)).started_at;
-await run('UPDATE trips SET started_at = ? WHERE id = ?', realStart - 3 * 3_600_000, trip.id);
+await run('UPDATE trips SET started_at = ? WHERE id = ?', realStart - 2.5 * 3_600_000, trip.id);
 q = (await call(admin, 'GET', `/api/incharge/trips/${trip.id}/qr`)).data;
 r = await call(jar(), 'POST', '/api/checkin/session', { token: q.token });
 ok(q.expired && r.status === 410, 'after 2 hours the trip QR is expired and refused', JSON.stringify({ expired: q.expired, status: r.status }));
@@ -344,6 +346,22 @@ r = await call(admin, 'POST', `/api/admin/students/${ids.priya}/devices/reset`, 
 ok(r.status === 200 && r.data.unlinked === 2, 'admin resets Priya devices');
 r = await board(jar(), S.priya);
 ok(r.status === 200, 'Priya boards after reset');
+
+// ---------------------------------------------------------------- forgotten trips
+console.log('\n[forgotten trips end by themselves]');
+r = await call(admin, 'POST', '/api/incharge/trips', { bus_id: otherBus.id, direction: 'to_college' }, csrf);
+const oldTrip = r.data.trip;
+ok(r.status === 201, `start a trip on bus ${otherBus.number}`);
+await run('UPDATE trips SET started_at = ? WHERE id = ?', Date.now() - 5 * 3_600_000, oldTrip.id);
+const ended = await autoEndStaleTrips();
+r = await call(admin, 'GET', `/api/admin/trips/${oldTrip.id}`);
+ok(ended.includes(oldTrip.id) && r.data.trip.status === 'ended' && r.data.trip.ended_at <= r.data.trip.started_at + 4 * 3_600_000, 'a trip left running past 4 hours is ended at its limit', JSON.stringify({ ended, status: r.data?.trip?.status }));
+r = await call(admin, 'GET', `/api/incharge/state?bus=${encodeURIComponent(otherBus.number)}`);
+ok(r.status === 200 && !r.data.activeTrips.some((t) => t.id === oldTrip.id), 'its bus shows no running trip, so the next trip starts fresh');
+r = await call(admin, 'POST', '/api/incharge/trips', { bus_id: otherBus.id, direction: 'from_college' }, csrf);
+ok(r.status === 201 && r.data.trip.id !== oldTrip.id, 'the evening trip is a new trip (morning and evening verifications kept apart)');
+await call(admin, 'POST', `/api/incharge/trips/${r.data.trip.id}/end`, {}, csrf);
+ok((await autoEndStaleTrips()).length === 0, 'trips within their hours are left running');
 
 // ---------------------------------------------------------------- brute force
 console.log('\n[brute force limits]');
