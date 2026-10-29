@@ -8,8 +8,17 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-// project folder (the one with package.json)
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * The project folder (the one with package.json). Normally found from this file's own location;
+ * on Netlify the code is bundled into one file where that location is not available, so fall back
+ * to the function's folder or the current folder.
+ */
+function findRoot() {
+  if (import.meta?.url) return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const candidates = [process.env.LAMBDA_TASK_ROOT, process.cwd()].filter(Boolean);
+  return candidates.find((dir) => fs.existsSync(path.join(dir, 'package.json'))) || candidates[0] || '.';
+}
+const ROOT = findRoot();
 
 // read .env if there is one
 try { process.loadEnvFile(path.join(ROOT, '.env')); } catch { /* no .env: defaults are fine */ }
