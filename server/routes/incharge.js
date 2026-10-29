@@ -1,3 +1,7 @@
+/*
+ * /api/incharge/... : the bus portals. Start/end a trip, show its QR, the live roster,
+ * mark a student manually. An incharge can only open their own bus.
+ */
 import { Router } from 'express';
 import { z } from 'zod';
 import { all, get, read } from '../db.js';

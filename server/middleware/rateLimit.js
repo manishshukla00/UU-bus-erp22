@@ -1,3 +1,6 @@
+/*
+ * Limits on how often one network can try to sign in, scan or verify (stops password and ID guessing).
+ */
 import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 import { config } from '../config.js';
 import { get, run } from '../db.js';

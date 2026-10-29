@@ -1,3 +1,7 @@
+/*
+ * Small helpers for requests and responses: HttpError (an error with a status code), cookies,
+ * the visitor's IP address, and validate() for checking request bodies with zod.
+ */
 import { config } from './config.js';
 
 export class HttpError extends Error {

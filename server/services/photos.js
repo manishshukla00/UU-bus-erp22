@@ -1,3 +1,7 @@
+/*
+ * Student selfies: checked, stored in the database, and served at /api/photos/:studentId
+ * (only to staff and to the student's own phone).
+ */
 import { Router } from 'express';
 import { get, now } from '../db.js';
 import { config } from '../config.js';

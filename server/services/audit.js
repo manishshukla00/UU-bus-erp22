@@ -1,3 +1,6 @@
+/*
+ * The audit log: who did what and when (sign-ins, changes, password views, deletions).
+ */
 import { run, now } from '../db.js';
 import { clientIp } from '../http.js';
 

@@ -79,7 +79,7 @@ Wants=network-online.target
 [Service]
 User=${APP_USER}
 WorkingDirectory=${APP_DIR}
-ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/server.js
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning server/index.js
 Restart=always
 RestartSec=3
 Environment=NODE_ENV=production

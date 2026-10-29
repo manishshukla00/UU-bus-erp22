@@ -1,23 +1,20 @@
 {
   "name": "uu-bus-erp",
   "version": "1.0.0",
-  "description": "United University bus verification: QR boarding with ID-only student verification, live admin dashboard (React + Tailwind front end, Node/Express API)",
+  "description": "United University bus verification: QR boarding, student verification with selfie, live admin dashboard (React + Express + Node, SQLite/Turso)",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch server/index.js",
+    "dev:client": "vite",
     "build": "vite build",
-    "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
-    "dev:web": "vite",
-    "seed:buses": "node --disable-warning=ExperimentalWarning scripts/seed-buses.js",
-    "seed:demo": "node --disable-warning=ExperimentalWarning scripts/seed-demo.js",
     "reset-admin": "node --disable-warning=ExperimentalWarning scripts/reset-admin.js",
     "backup": "node --disable-warning=ExperimentalWarning scripts/backup.js",
-    "test:security": "node --disable-warning=ExperimentalWarning scripts/security-test.mjs",
-    "serve:function": "node --disable-warning=ExperimentalWarning scripts/serve-function.mjs"
+    "test:security": "node --disable-warning=ExperimentalWarning scripts/security-test.mjs"
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",

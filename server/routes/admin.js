@@ -1,3 +1,8 @@
+/*
+ * /api/admin/... : the transport console (super admin; operations admins can only view).
+ * Dashboard and today's report, students, buses and routes, Excel import, staff, trips, flags,
+ * audit log and settings.
+ */
 import { Router } from 'express';
 import { z } from 'zod';
 import { all, get, read, run, batch, batchChunks, now, getSetting, setSetting, dbKind } from '../db.js';
@@ -15,8 +20,6 @@ import { isOwnPhotoUrl } from '../services/photos.js';
 import { tripSummary, listTrips, activeTrips, endTrip } from '../services/trips.js';
 import { clientCount } from '../services/events.js';
 import { baseUrl, qrMode, setQrMode, qrTripHours, setQrTripHours } from '../services/qr.js';
-import { seedFleet, FLEET } from '../services/fleet.js';
-import { addDemoStudents, removeDemoStudents } from '../services/demo.js';
 
 const router = Router();
 router.use(requireAuth('admin', 'operator'));
@@ -286,21 +289,6 @@ router.post('/import/workbook', async (req, res) => {
 });
 
 
-/** Dummy students (IDs DEMO-<bus>-<n>) for trying the system out; repeatable, removable. */
-router.post('/demo-students', async (req, res) => {
-  const { perBus } = validate(z.object({ perBus: z.coerce.number().int().min(1).max(50).default(6) }), req.body);
-  const r = await addDemoStudents(perBus);
-  if (!r.buses) throw new HttpError(409, 'Create the buses first (Buses & stops → Create 19-bus fleet).');
-  await audit(req, 'student.demo.add', 'student', null, `${r.inserted} demo students added (${r.perBus} per bus, ${r.buses} buses)`);
-  res.json(r);
-});
-
-router.delete('/demo-students', async (req, res) => {
-  const r = await removeDemoStudents();
-  await audit(req, 'student.demo.remove', 'student', null, `${r.removed} demo students removed`);
-  res.json(r);
-});
-
 router.get('/students/export.csv', async (req, res) => {
   const rows = await all(
     `SELECT s.uuid, s.name, s.photo_url AS photourl, st.name AS route, b.number AS busno, s.course, s.enrollment_no AS enrollmentno,
@@ -326,18 +314,6 @@ router.get('/buses', async (req, res) => {
     all("SELECT id, name, username, bus_id FROM users WHERE role = 'incharge' AND active = 1 ORDER BY name"),
   ]);
   res.json({ buses: buses.map((b) => ({ ...b, stops: stops.filter((s) => s.bus_id === b.id), incharges: incharges.filter((u) => u.bus_id === b.id) })) });
-});
-
-/**
- * Create the standard 19-bus fleet (buses, stops, one incharge per bus) on the server, so hosted
- * deployments need no local scripts. Only missing pieces are added. New incharge passwords are
- * returned once and never stored in plain text.
- */
-router.post('/fleet', async (req, res) => {
-  const created = await seedFleet();
-  await audit(req, 'fleet.seed', 'bus', null, `${created.buses} buses, ${created.stops} stops, ${created.incharges.length} incharge accounts created`);
-  res.set('Cache-Control', 'no-store');
-  res.json({ fleetSize: FLEET.length, buses: created.buses, stops: created.stops, incharges: created.incharges });
 });
 
 const busSchema = z.object({ number: str(20, 1), name: str(60, 1), route: str(200).default(''), active: z.boolean().optional().default(true) });

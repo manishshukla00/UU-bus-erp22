@@ -1,3 +1,7 @@
+/*
+ * Bulk imports: students from CSV/Excel, and the whole bus database workbook (Buses, Incharges,
+ * Students, VerificationLogs sheets).
+ */
 import { all, get, run, batchChunks, now } from '../db.js';
 import { config } from '../config.js';
 import { HttpError } from '../http.js';

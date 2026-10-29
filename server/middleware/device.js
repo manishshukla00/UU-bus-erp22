@@ -1,3 +1,7 @@
+/*
+ * Gives every phone a stable, signed id (cookie + a copy in the phone's storage). A phone is tied to
+ * the first student who verifies with it, which stops one phone verifying several students.
+ */
 import { config } from '../config.js';
 import { parseCookies, setCookie } from '../http.js';
 import { randomId, sign, unsign } from '../security.js';

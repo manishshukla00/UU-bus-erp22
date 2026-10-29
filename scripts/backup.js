@@ -6,8 +6,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { config } from '../src/config.js';
-import { execRaw, closeDb, dbKind } from '../src/db.js';
+import { config } from '../server/config.js';
+import { execRaw, closeDb, dbKind } from '../server/db.js';
 
 if (dbKind() !== 'sqlite') {
   console.log('This project uses a Turso database. Turso keeps point-in-time backups; for a local copy run:\n  turso db export <database-name>');

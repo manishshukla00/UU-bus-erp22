@@ -11,7 +11,7 @@ export const handler = async (event, context) => {
     handlerPromise = (async () => {
       // tell the app where it runs before it reads its configuration
       process.env.HOSTING_PLATFORM ||= 'netlify';
-      const { default: app } = await import('../../src/app.js');
+      const { default: app } = await import('../../server/app.js');
       // images (student photos) must go back base64-encoded, or the bytes are corrupted as text
       return serverless(app, { basePath: '/.netlify/functions/server', binary: ['image/*', 'application/octet-stream'] });
     })().catch((e) => { handlerPromise = null; throw e; });

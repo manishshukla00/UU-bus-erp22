@@ -1,14 +1,14 @@
 /**
- * End-to-end security test. Run against a RUNNING server that has the demo data loaded:
- *   npm run seed:demo && npm start          (in one terminal)
+ * End-to-end security test. Run it against a RUNNING local server:
+ *   npm start                                         (in one terminal)
  *   ADMIN_PW=<admin password> npm run test:security   (in another)
  * Optional: BASE=http://localhost:3000
- * Simulates different phones with separate cookie jars and creates/removes its own temporary
- * incharge account. Uses bus 12 of the seeded fleet. Safe to re-run.
+ * It creates its own test buses (12 and 13) and students, simulates different phones with separate
+ * cookie jars, and creates/removes its own temporary staff accounts. Safe to re-run.
  */
-import { tokenFor, dayTokenFor } from '../src/services/qr.js';
-import { autoEndStaleTrips } from '../src/services/trips.js';
-import { get, run } from '../src/db.js';
+import { tokenFor, dayTokenFor } from '../server/services/qr.js';
+import { autoEndStaleTrips } from '../server/services/trips.js';
+import { get, run } from '../server/db.js';
 
 const BASE = (process.env.BASE || 'http://localhost:3000').replace(/\/+$/, '');
 const ADMIN_PW = process.env.ADMIN_PW;
@@ -50,10 +50,21 @@ const csrf = { 'X-CSRF-Token': r.data.csrf, Origin: BASE };
 const LIVE = r.data.live;
 console.log(`  (server live mode: ${LIVE})`);
 
+// test data: bus 12 with five students and bus 13 with two (created or refreshed through the CSV import)
+r = await call(admin, 'POST', '/api/admin/students/import', { csv: [
+  'uuid,name,course,year,bus,stop',
+  'SEC12-001,Aditi Test Sharma,B.Tech,2nd,12,Civil Lines',
+  'SEC12-002,Rahul Test Verma,BCA,1st,12,Civil Lines',
+  'SEC12-003,Priya Test Singh,MBA,1st,12,Naini',
+  'SEC12-004,Arjun Test Yadav,B.Sc,3rd,12,Naini',
+  'SEC12-005,Neha Test Gupta,BBA,2nd,12,Naini',
+  'SEC13-001,Tanvi Test Mishra,B.Tech,1st,13,Jhunsi',
+  'SEC13-002,Kabir Test Rai,BCA,2nd,13,Jhunsi',
+].join('\n') }, csrf);
+if (r.status !== 200) { console.error('could not create test data:', r.data); process.exit(2); }
 const allBuses = (await call(admin, 'GET', '/api/admin/buses')).data.buses.filter((b) => b.active);
 const bus12 = allBuses.find((b) => b.number === '12');
-const otherBus = allBuses.find((b) => b.number !== '12');
-if (!bus12 || !otherBus) { console.error('Need the seeded fleet. Run: npm run seed:demo'); process.exit(2); }
+const otherBus = allBuses.find((b) => b.number === '13');
 const state0 = await call(admin, 'GET', '/api/incharge/state');
 for (const t of state0.data.activeTrips.filter((t) => t.bus_number === '12')) await call(admin, 'POST', `/api/incharge/trips/${t.id}/end`, {}, csrf);
 
@@ -61,7 +72,7 @@ for (const t of state0.data.activeTrips.filter((t) => t.bus_number === '12')) aw
 const pick = async (busId, n) => (await call(admin, 'GET', `/api/admin/students?bus=${busId}&active=1&limit=${n}`)).data.items.slice(0, n);
 const on12 = await pick(bus12.id, 4);
 const onOther = await pick(otherBus.id, 1);
-if (on12.length < 4 || onOther.length < 1) { console.error('Need at least 4 students on bus 12 and 1 on another bus. Run: npm run seed:demo'); process.exit(2); }
+if (on12.length < 4 || onOther.length < 1) { console.error('test students missing'); process.exit(2); }
 const S = { aditi: [on12[0].uuid, on12[0].name], rahul: [on12[1].uuid, on12[1].name], priya: [on12[2].uuid, on12[2].name], arjun: [on12[3].uuid, on12[3].name], tanvi: [onOther[0].uuid, onOther[0].name] };
 const ids = { aditi: on12[0].id, rahul: on12[1].id, priya: on12[2].id, arjun: on12[3].id, tanvi: onOther[0].id };
 for (const id of Object.values(ids)) await call(admin, 'POST', `/api/admin/students/${id}/devices/reset`, {}, csrf);
@@ -74,14 +85,10 @@ const SELFIE = `data:image/jpeg;base64,${Buffer.concat([Buffer.from([0xff, 0xd8,
 const users = (await call(admin, 'GET', '/api/admin/users')).data.items;
 for (const u of users.filter((x) => ['locktest', 'testincharge12', 'testinchargex', 'testoperator'].includes(x.username))) await call(admin, 'DELETE', `/api/admin/users/${u.id}`, undefined, csrf);
 
-console.log('\n[fleet]');
-ok(allBuses.length >= 19, `fleet has 19 buses (found ${allBuses.length})`);
-ok(allBuses.every((b) => b.stops.length > 0), 'every bus has stops');
-ok(allBuses.filter((b) => b.incharges.length > 0).length >= 19, 'every bus has its own incharge account');
-r = await call(admin, 'POST', '/api/admin/fleet', {}, csrf);
-ok(r.status === 200 && r.data.fleetSize === 19 && r.data.buses === 0 && r.data.incharges.length === 0, 'fleet button is idempotent: nothing new on a complete fleet', JSON.stringify(r.data));
-r = await call(admin, 'POST', '/api/admin/fleet', {});
-ok(r.status === 403 && r.data.code === 'CSRF', 'fleet button needs the CSRF token', r.status);
+console.log('\n[buses]');
+ok(bus12.stops.length > 0 && otherBus.stops.length > 0, 'test buses 12 and 13 exist with their routes');
+r = await call(admin, 'POST', '/api/admin/buses', { number: 'NOCSRF', name: 'x' });
+ok(r.status === 403 && r.data.code === 'CSRF', 'changes need the CSRF token', r.status);
 // pages are the React app; the access rules live in the API
 r = await call(admin, 'GET', '/api/incharge/state?bus=12');
 ok(r.status === 200 && r.data.scopedBus?.number === '12', 'admin can open the bus 12 portal');
@@ -150,8 +157,8 @@ ok(r.status === 200 && r.data.buses.length === 1 && r.data.buses[0].number === '
 // the web app sends an incharge who opens another bus back to their home portal
 r = await call(inch, 'GET', '/api/auth/me');
 ok(r.status === 200 && r.data.user.home === '/bus/12', "the incharge's home is the bus 12 portal", JSON.stringify(r.data?.user));
-r = await call(inch, 'POST', '/api/admin/fleet', {}, icsrf);
-ok(r.status === 403, 'incharge cannot create the fleet -> 403', r.status);
+r = await call(inch, 'POST', '/api/admin/buses', { number: 'INCH', name: 'x' }, icsrf);
+ok(r.status === 403, 'incharge cannot add buses -> 403', r.status);
 r = await call(inch, 'GET', '/api/admin/dashboard');
 ok(r.status === 403, 'incharge cannot open admin API -> 403', r.status);
 r = await call(inch, 'POST', '/api/incharge/trips', { bus_id: otherBus.id, direction: 'to_college' }, icsrf);
@@ -444,7 +451,7 @@ for (const p of ['/api/admin/users', `/api/admin/users/${testInchargeId}/passwor
   ok(r.status === 403, `operations admin cannot open ${p}`, r.status);
 }
 const writes = [
-  ['POST', '/api/admin/fleet', {}], ['POST', '/api/admin/demo-students', {}], ['PUT', '/api/admin/settings', { qr_mode: 'rotating' }],
+  ['POST', '/api/admin/buses', { number: 'OPX', name: 'x' }], ['POST', '/api/admin/import/workbook', {}], ['PUT', '/api/admin/settings', { qr_mode: 'rotating' }],
   ['POST', '/api/admin/students', { uuid: 'X1', name: 'Xx Yy' }], ['POST', '/api/incharge/trips', { bus_id: otherBus.id, direction: 'to_college' }],
   ['POST', `/api/incharge/trips/${trip.id}/end`, {}], ['POST', `/api/incharge/trips/${trip.id}/manual`, { uuid: S.rahul[0] }],
   ['POST', `/api/incharge/trips/${trip.id}/new-qr`, {}], ['POST', '/api/auth/change-password', { current: 'OperatorPass123', next: 'OperatorPass456' }],
@@ -458,20 +465,6 @@ ok(r.status === 200 && Number.isInteger(r.data.cursor), 'operations admin receiv
 r = await call(op, 'GET', `/api/incharge/state?bus=${encodeURIComponent(otherBus.number)}`);
 ok(r.status === 200, 'operations admin can open any bus portal to watch it', r.status);
 await call(admin, 'DELETE', `/api/admin/users/${testOperatorId}`, undefined, csrf);
-
-console.log('\n[demo students]');
-r = await call(inch, 'POST', '/api/admin/demo-students', { perBus: 2 }, icsrf);
-ok(r.status === 403, 'incharge cannot add demo students -> 403', r.status);
-r = await call(admin, 'POST', '/api/admin/demo-students', { perBus: 2 }, csrf);
-ok(r.status === 200 && r.data.inserted === r.data.buses * 2, 'admin adds 2 demo students per bus', JSON.stringify(r.data));
-r = await call(admin, 'POST', '/api/admin/demo-students', { perBus: 2 }, csrf);
-ok(r.status === 200 && r.data.inserted === 0, 'adding demo students again is idempotent');
-r = await call(admin, 'GET', '/api/admin/students?q=DEMO-12-1');
-ok(r.data.items.some((s) => s.uuid === 'DEMO-12-1' && s.bus_number === '12' && s.stop_name), 'demo student DEMO-12-1 is on bus 12 with a stop');
-r = await call(admin, 'DELETE', '/api/admin/demo-students', undefined, csrf);
-ok(r.status === 200 && r.data.removed >= 2, 'remove demo deletes them', JSON.stringify(r.data));
-r = await call(admin, 'GET', '/api/admin/students?q=DEMO-');
-ok(r.data.total === 0, 'no demo students left; real students untouched');
 
 await call(admin, 'DELETE', `/api/admin/users/${testInchargeId}`, undefined, csrf);
 

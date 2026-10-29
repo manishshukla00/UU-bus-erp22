@@ -1,3 +1,8 @@
+/*
+ * Live updates for the bus portals and dashboards ("Aarush verified", "trip ended").
+ *   own server: pushed instantly (Server-Sent Events)
+ *   Netlify:    saved in the events table; screens ask for new ones every few seconds
+ */
 import { config } from '../config.js';
 import { run, get, all, now } from '../db.js';
 

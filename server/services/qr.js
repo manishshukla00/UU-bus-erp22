@@ -1,3 +1,6 @@
+/*
+ * The bus QR codes: making them, drawing them, and checking a scanned one.
+ */
 import QRCode from 'qrcode';
 import { config, publicBaseUrl } from '../config.js';
 import { hmac, safeEqual, randomId } from '../security.js';

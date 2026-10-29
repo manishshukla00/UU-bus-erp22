@@ -1,3 +1,9 @@
+/*
+ * /api/checkin/... : the student's phone (no login).
+ *   POST /session  after scanning the QR: opens a short private session on this phone
+ *   GET  /session  what the page should show after a reload
+ *   POST /verify   UUID or enrollment number (+ a selfie the first time) -> verified card
+ */
 import { Router } from 'express';
 import { z } from 'zod';
 import { get, read, run, now } from '../db.js';

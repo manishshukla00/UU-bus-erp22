@@ -1,3 +1,7 @@
+/*
+ * Trips (one bus run, to or from college): start, end, counts, the roster, and ending trips that
+ * were left running too long.
+ */
 import { all, get, read, batch, now } from '../db.js';
 import { randomId } from '../security.js';
 import { HttpError } from '../http.js';
@@ -33,8 +37,6 @@ export async function tripCounts(tripId, busId) {
   );
   return { boarded: r.boarded, flagged: r.flagged, expected: r.expected, duplicates: r.duplicates };
 }
-
-export const withCounts = async (trip) => ({ ...trip, counts: await tripCounts(trip.id, trip.bus_id) });
 
 /** The trip, its counts, who verified and who has not yet: one database round trip. */
 export async function tripSummary(id, { lists = true } = {}) {

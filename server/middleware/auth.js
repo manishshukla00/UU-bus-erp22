@@ -1,3 +1,7 @@
+/*
+ * Staff sign-in: reads the session cookie on every request (req.user), and requireAuth(...roles)
+ * protects routes: right role, a CSRF token and same-site origin for every change.
+ */
 import { get, run, now } from '../db.js';
 import { config } from '../config.js';
 import { parseCookies, clearCookie, HttpError } from '../http.js';

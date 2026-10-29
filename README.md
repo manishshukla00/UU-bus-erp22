@@ -2,8 +2,8 @@
 
 A fast, proxy-resistant **QR boarding and verification system** for United University's buses.
 It brings the Google Apps Script verification system (Students / Buses / Incharges sheets) onto a
-real web stack: a **React 19 + Tailwind CSS** front end and a **Node.js (Express) API** with a
-SQLite / Turso database.
+web app: **React 19 + Tailwind CSS** in `client/`, a **Node.js + Express** API in `server/`, and an
+**SQLite** database (a local file, or **Turso** when hosted online). The code is kept simple and commented.
 
 * Every bus has **its own portal** (`/bus/UU-10`), **its own QR code** and **its own incharge login**.
 * The incharge starts the **morning** (to college) or **evening** (from college) trip and shows the QR.
@@ -26,8 +26,7 @@ Requirements: **Node.js 22.13 or newer** (uses the built-in SQLite, no native mo
 ```bash
 npm install
 npm run build         # builds the React app into dist/
-npm run seed:demo     # optional: a demo fleet with demo students to try things out
-npm start
+npm start             # starts the server
 ```
 
 Then open <http://localhost:3000>.
@@ -45,8 +44,8 @@ Then open <http://localhost:3000>.
 While developing the front end, run the API and the Vite dev server side by side:
 
 ```bash
-npm run dev           # API on :3000, restarts on changes
-npm run dev:web       # React app on :5173 with hot reload (sends /api to :3000)
+npm run dev           # API on :3000, restarts when you change server code
+npm run dev:client    # React app on :5173 with hot reload (sends /api to :3000)
 ```
 
 Useful scripts:
@@ -55,13 +54,10 @@ Useful scripts:
 | --- | --- |
 | `npm start` | run the server (serves the built app from `dist/` and the API) |
 | `npm run build` | build the React app into `dist/` |
-| `npm run dev` / `npm run dev:web` | API with auto-restart / React app with hot reload |
-| `npm run seed:buses` | create a demo 19-bus fleet: buses, stops, one incharge account per bus |
-| `npm run seed:demo` | the demo fleet plus demo students (about 6 per bus) |
+| `npm run dev` / `npm run dev:client` | API with auto-restart / React app with hot reload |
 | `npm run reset-admin` | reset the admin password if it is lost |
 | `npm run backup` | consistent copy of the database into `data/backups/` |
-| `npm run test:security` | end-to-end test of every security and verification rule against a running server |
-| `npm run serve:function` | run the serverless function locally on port 3001 |
+| `npm run test:security` | end-to-end test of every security and verification rule against a running server (creates its own test buses 12 and 13) |
 
 ---
 
@@ -109,7 +105,7 @@ Useful scripts:
    does the lookup and the atomic check-in. Everything on the card comes from the database.
 5. The verification appears on the bus portal (with the student's photo, so the incharge can
    compare faces) and on every admin dashboard: instantly over Server-Sent Events on a single
-   server, or within a few seconds by polling on Netlify / Vercel.
+   server, or within a few seconds by polling on Netlify.
 6. Scanning again after being verified shows the card marked **ALREADY VERIFIED** and counts as a
    **duplicate**. **End trip** closes the trip; the QR and all pending sessions stop working.
 
@@ -154,93 +150,22 @@ Copy `.env.example` to `.env`. Everything is optional.
 | `QR_GRACE_SLOTS` | `1` | how many previous QR windows are still valid |
 | `CHECKIN_MINUTES` | `5` | time a student has to finish after scanning |
 | `MAX_DEVICES_PER_STUDENT` | `2` | phones a student may use in 30 days |
-| `COOKIE_SECURE` | auto | force the `Secure` cookie flag (auto on when `BASE_URL` is https, always on Vercel) |
-| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | unset (local SQLite file) | use a Turso database instead of `data/bus-erp.sqlite`; required on Vercel |
-| `ADMIN_PASSWORD` | unset | password for the first `admin` account (on Vercel the only way to create it without seeding) |
-| `LIVE_MODE` | `sse` locally, `poll` on Vercel | how screens get live updates |
-| `RATE_LIMIT_STORE` | `memory` locally, `db` on Vercel | where login / scan throttles are counted |
-| `SERVERLESS` | auto on Vercel / Netlify / AWS Lambda | force serverless behaviour, e.g. for `npm run serve:function` |
+| `COOKIE_SECURE` | auto | force the `Secure` cookie flag (auto on when `BASE_URL` is https, always on Netlify) |
+| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | unset (local SQLite file) | use a Turso database instead of `data/bus-erp.sqlite`; required on Netlify |
+| `ADMIN_PASSWORD` | unset | password for the first `admin` account (online, the only way to create the first admin) |
+| `LIVE_MODE` | `sse` locally, `poll` on Netlify | how screens get live updates |
+| `RATE_LIMIT_STORE` | `memory` locally, `db` on Netlify | where login / scan throttles are counted |
+| `SERVERLESS` | auto on Netlify | force serverless behaviour |
 | `POLL_SECONDS` | `2.5` | how often screens poll for live updates in serverless mode (1.5–30); higher = fewer function calls |
 
 ---
 
-## Deploy on Vercel
-
-Students board on **mobile data**, so production needs a public HTTPS address. The repo is
-ready for Vercel: `npm run build` builds the React app into `dist/`, which Vercel's CDN serves;
-`api/index.js` runs the API as one serverless function, and functions are pinned to Mumbai (`bom1`) in `vercel.json`.
-
-Serverless functions have no disk that survives between requests, so on Vercel the data lives
-in **Turso**, a hosted database that speaks the same SQLite dialect (nothing in the app changes).
-Live updates switch automatically from push to **polling every ~2.5 s**, and login / scan
-throttles are shared through the database so every function instance enforces the same limits.
-
-**1. Create the project**
-
-1. Go to <https://vercel.com/new>, sign in with GitHub and import `manishshukla00/UU-bus-erp22`.
-   The framework preset comes from `vercel.json` ("Other"); it runs `npm run build`.
-2. Before the first deploy, add an environment variable `SESSION_SECRET` with a long random
-   value. Generate one with:
-   ```bash
-   node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
-   ```
-   Keep it stable: changing it signs everyone out and invalidates running QR codes.
-
-**2. Connect a Turso database**
-
-In the Vercel project open **Storage → Create / Browse Marketplace → Turso**, create a database
-(pick the **Mumbai / ap-south-1** region, next to the functions) and connect it to the project.
-That adds `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. Then **redeploy** (Deployments → ⋯ →
-Redeploy) so the function picks them up. Until both variables exist, every page shows a short
-"Finish the server setup" checklist instead of failing.
-
-**3. Create the 19 buses and accounts in Turso** (from your computer, once)
-
-```bash
-npx vercel link
-npx vercel env pull .env.vercel --environment production
-set -a; . ./.env.vercel; set +a; npm run seed:buses
-```
-
-`vercel env pull` writes the Turso URL and token into `.env.vercel` (git-ignored). It is
-deliberately not `.env`: the app reads `.env` on every local start, so production settings
-there would make your laptop write to the live database. The third line loads them only for
-the seed (Git Bash / macOS / Linux syntax), which then creates the 19 buses, their stops,
-`admin` and `incharge1` … `incharge19` directly in Turso.
-The passwords are printed and saved to `data/turso-initial-admin.txt` and
-`data/turso-incharge-accounts.txt` (separate from your local files). Instead of seeding you can
-set `ADMIN_PASSWORD` on Vercel: the first request then creates `admin` with that password, and
-**Admin → Import Excel** creates the buses, incharge accounts and students from the workbook.
-
-**4. Use it**
-
-Open `https://<your-project>.vercel.app`, sign in as `admin`, change the password, import the
-students (Admin → Students → Import CSV), and give each incharge their line. QR codes use the
-production domain automatically; add a custom domain under Settings → Domains and it is picked
-up the same way (or set it in Admin → Settings → Public base URL).
-
-Good to know:
-
-* **Plan.** Vercel's free Hobby plan is meant for personal, non-commercial projects. For the
-  college's official system use **Pro**. Polling means each open bus screen makes about one
-  request every 2.5 s, roughly 1 million function calls a month for 19 buses boarding about an
-  hour a day. Check current limits on <https://vercel.com/pricing> and <https://turso.tech/pricing>.
-* **Preview deployments** get the same variables unless you scope them. Scope the Turso
-  variables to **Production** if previews must not touch real data.
-* **CSV imports** are limited to about 4 MB per file on Vercel (≈ 30,000 students); split
-  bigger files.
-* **Backups.** Turso keeps point-in-time history; `turso db export` gives a local copy.
-
-**Try serverless mode locally first** (optional): with the Turso variables in `.env`,
-`SERVERLESS=1 npm run serve:function` runs the exact Vercel function on
-<http://localhost:3001>.
-
 ## Deploy on Netlify
 
-Same idea as Vercel: `netlify/functions/server.js` runs the whole app as one function
+`netlify/functions/server.js` runs the whole app as one function
 (through `serverless-http`), the React app in `dist/` is served from Netlify's CDN (pages load
 without waiting for the function), `netlify.toml` sends `/api/*` to the function, and the data lives in **Turso**. Live updates use polling and
-throttles are shared through the database, exactly as on Vercel.
+throttles are shared through the database.
 
 **1. Create a Turso database**
 
@@ -274,7 +199,7 @@ shows a short "Finish the server setup" checklist.
 Sign in as `admin`, set a new password, open **Admin → Import Excel** and choose the
 *United University Bus Database* workbook. It creates the buses, one incharge account per bus
 (Login ID = `InchargeID`) and every student, and shows the new incharge passwords **once** with
-Copy and Download CSV buttons. The same page works on Vercel and on a local server.
+Copy and Download CSV buttons. The same page works on a local server.
 
 Command-line alternative (Netlify CLI):
 
@@ -357,27 +282,30 @@ UU253500002,Akanksha Yadav,,01 Trivenipuram Crossing Jhunsi,UU-10,AGRI-BSc-AG (H
 ## Project layout
 
 ```
-web/                 React 19 + Tailwind CSS 4 front end (Vite), built into dist/
-  src/pages/         Checkin (student phone), Login, admin/* (console), portal/* (bus portals)
-  src/components/    UI kit, StudentCard (the verified card), brand header, password dialog
-  src/lib/           API client, tiny router, session, live updates (SSE or polling), formatting
-public/              images and web manifest (copied into dist/)
-src/
-  app.js             Express app: security headers, setup gate, API routes, serves dist/
-  server.js          long-running server for `npm start` (listen, timers, graceful shutdown)
-  config.js          env, serverless detection, LAN detection
-  db.js              async DB layer: node:sqlite locally or Turso/libSQL, migrations, housekeeping
-  security.js        scrypt, HMAC, signed values, ID normalisation
-  middleware/        session auth + CSRF, device identity, rate limits (memory or DB-shared)
-  services/          QR tokens, trips, check-ins (anti-proxy rules), imports (CSV / Excel), live events, audit
-  routes/            /api/auth, /api/admin, /api/incharge, /api/checkin
-api/index.js         Vercel serverless entry          vercel.json   Vercel config
-netlify/functions/   Netlify Functions entry          netlify.toml  Netlify config (CDN + /api function)
-scripts/             seed, reset-admin, backup, security-test, serve-function
-data/                local database, secret key, credentials, backups (git-ignored)
-```
+client/                    React app (what people see), built into dist/
+  index.html
+  public/                  images and web manifest
+  src/
+    main.jsx, App.jsx      start-up and page routing
+    pages/                 Login, Checkin (student phone), admin/* (console), portal/* (bus portals)
+    components/            buttons, dialogs, the verified StudentCard, header
+    lib/                   api.js (all server calls), live updates, session, router, formatting
 
----
+server/                    Express API
+  index.js                 starts the server (npm start)
+  app.js                   security headers, pages, and which file handles each /api address
+  config.js                all settings (from .env)
+  db.js                    database helpers (local SQLite or Turso) and the tables
+  security.js, http.js     passwords, signatures, request helpers
+  middleware/              staff sign-in, phone identity, rate limits
+  routes/                  /api/auth, /api/admin, /api/incharge, /api/checkin
+  services/                QR codes, trips, verification, selfies, imports, live events, audit log
+
+netlify/functions/         runs server/app.js on Netlify          netlify.toml   Netlify settings
+deploy/                    one-command setup for your own server (Oracle Cloud or any Ubuntu VPS)
+scripts/                   reset-admin, backup, security-test
+data/                      local database, secret key, backups (git-ignored)
+```
 
 ## Troubleshooting
 

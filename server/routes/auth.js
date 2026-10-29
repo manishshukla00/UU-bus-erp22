@@ -1,3 +1,6 @@
+/*
+ * /api/auth/... : sign in, sign out, "who am I", change password.
+ */
 import { Router } from 'express';
 import { z } from 'zod';
 import { get, run, batch, now } from '../db.js';
